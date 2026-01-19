@@ -17,8 +17,8 @@ webhook_receiver = lk_webhook.WebhookReceiver(token_verifier)
 
 @router.post("/caller")
 async def livekit_webhook(request: Request):
-    event = await webhook_receiver.receive(request)
-    room_name = event.room.name if event.room else None
-        
-    print(f"📡 EVENT: {event.event} | Room: {room_name}")
-    return {"EVENT": event, "room_name": room_name}
+    body = await request.body()
+    auth_header = request.headers.get("Authorization")
+
+    event = webhook_receiver.receive_webhook(body, auth_header)
+    return {"body": body, "event": event}
