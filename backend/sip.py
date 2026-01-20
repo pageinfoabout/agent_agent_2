@@ -86,7 +86,8 @@ async def setup_sip_for_new_call(
             else:
                 in_trunk = api.SIPInboundTrunkInfo(
                     name=f"inbound_call",
-                    numbers=[caller_phone_number],
+                    numbers=["+74992130459"],
+                    allowed_addresses=[caller_phone_number],
                     krisp_enabled=True,  # если реально хотите Krips (Cloud)
                 )
                 request = api.CreateSIPInboundTrunkRequest(trunk=in_trunk)

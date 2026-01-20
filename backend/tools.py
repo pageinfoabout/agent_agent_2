@@ -84,7 +84,7 @@ async def get_services() -> str:
 
 
 @llm.function_tool
-async def get_id_by_phone(phone: str) -> str:
+async def get_id_by_phone(sip_caller_phone: str) -> str:
     """
 
     Возвращает ID пользователя по номеру телефона
@@ -97,7 +97,7 @@ async def get_id_by_phone(phone: str) -> str:
     """
     response = supabase.table("users") \
         .select("id") \
-        .eq("number", phone) \
+        .eq("number", sip_caller_phone) \
         .execute()
     print(f"Response: {response}")
     if response.data:
@@ -131,10 +131,10 @@ async def get_cupon(cupon_name: str) -> str:
 
 
 @llm.function_tool
-async def delete_booking(phone: str, date: str, time: str) -> str:
+async def delete_booking(sip_caller_phone: str, date: str, time: str) -> str:
     """
     Удаляет запись по его ID
-    :param phone: Номер телефона пользователя в формате 79000000000
+    :param phone: sip_caller_phone
     :param date: Дата приёма
     :param time: Время приёма
     :return: Сообщение об успешном удалении
@@ -143,7 +143,8 @@ async def delete_booking(phone: str, date: str, time: str) -> str:
     2026-01-15
     14:00
     """
-    response = supabase.table("bookings").delete().eq("phone", phone).eq("date", date).eq("time", time).execute()
+    phone_with_plus = f"+{sip_caller_phone}" 
+    response = supabase.table("bookings").delete().eq("phone", phone_with_plus).eq("date", date).eq("time", time).execute()
     print(f"Response: {response}")
     if response.data:
         return json.dumps(response.data, ensure_ascii=False)
@@ -155,7 +156,7 @@ async def delete_booking(phone: str, date: str, time: str) -> str:
 
 
 @llm.function_tool
-async def create_booking(name: str, phone: str, date: str, time: str, service_id: str, service_name: str, service_price: int, cabinet_id: str, cupon_name: str, discount_percent: int) -> str:
+async def create_booking(name: str, sip_caller_phone: str, date: str, time: str, service_id: str, service_name: str, service_price: int, cabinet_id: str, cupon_name: str, discount_percent: int) -> str:
     """
 
         
@@ -169,7 +170,7 @@ async def create_booking(name: str, phone: str, date: str, time: str, service_id
         # Обязательные поля (без них функцию вызывать нельзя)
 
         1. name — имя пациента
-        2. phone — контактный номер телефона
+        2. phone — sip_caller_phone
         3. date — дата приёма
         4. time — время приёма
         5. services — минимум одна выбранная услуга
@@ -249,10 +250,11 @@ async def create_booking(name: str, phone: str, date: str, time: str, service_id
         cupon_name = None
     if discount_percent == "null":
         discount_percent = None
-
+        
+    phone_with_plus = f"+{sip_caller_phone}" 
     payload = {
         "name": name,
-        "phone": phone,
+        "phone": phone_with_plus,
         "date": date,
         "time": time,
         "services": [{

@@ -56,6 +56,7 @@ async def main():
         trunk = api.SIPInboundTrunkInfo(
         name = "My trunk",
         numbers = ["+74992130459"],
+        allowed_numbers = {}
         krisp_enabled = True,
         )
         request = api.CreateSIPInboundTrunkRequest(

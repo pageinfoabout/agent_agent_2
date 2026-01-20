@@ -52,9 +52,9 @@ THIS_DIR = Path(__file__).parent
 
 
 
-
 class Assistant(Agent):
-    def __init__(self) -> None:
+    def __init__(self, sip_caller_phone: str):
+        self.sip_caller_phone = sip_caller_phone
         super().__init__(
             instructions= f"""# Персона
 
@@ -115,7 +115,7 @@ get_services
 
 
 1. Имя пациента
-2. Контактный номер телефона (так же отсюда ты узнаешь про id кабинета )
+2. Контактный номер телефона {sip_caller_phone}
 3. id кабинета (если нет ставишь null )
 3. Желаемую дату приёма
 4. Желаемое время приёма
@@ -188,6 +188,7 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 server = AgentServer()
 
 
+
 @server.rtc_session(agent_name="assistant")
 async def my_agent(ctx: JobContext):
 
@@ -202,6 +203,17 @@ async def my_agent(ctx: JobContext):
 
     room = ctx.room 
     room_name = room.name
+    await ctx.connect()
+
+    participant = await ctx.wait_for_participant()
+    print(f"🔔 Participant joined: {participant.attributes}")
+
+    sip_caller_phone = participant.attributes['sip.phoneNumber']
+    print(f"📞 sip_caller_phone: {sip_caller_phone}")  #
+
+
+ 
+   
    
     print(f"🔔 Room name: {room_name}")
     
@@ -241,23 +253,18 @@ async def my_agent(ctx: JobContext):
 
     await session.start(
     room=room,
-    agent=Assistant(),
+    agent=Assistant(sip_caller_phone=sip_caller_phone),
     room_options=room_io.RoomOptions(
         audio_input=room_io.AudioInputOptions(
             noise_cancellation=None  # OSS-safe
         ),
         # ✅ ЭТО ВСЁ! Комната удалится автоматически
-        delete_room_on_close=True  # ← КОМНАТА УДАЛИТСЯ ПРИ ДИСКОННЕКТЕ!
+         delete_room_on_close=True,
+        close_on_disconnect=True,    # ← КОМНАТА УДАЛИТСЯ ПРИ ДИСКОННЕКТЕ!
     ),
 )
 
-    participant = await ctx.wait_for_participant()
-    print(f"🔔 Participant joined: {participant.attributes}")
-
-    if not participant:
-        print("No participant joined.")
-    else:
-        await session.say(
+    await session.say(
             "Клиника «Алиф Дэнт». Здравствуйте, как я могу вам помочь?",
             allow_interruptions=False,
         )
