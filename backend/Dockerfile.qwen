@@ -1,5 +1,4 @@
-FROM nvidia/cuda:13.1.1-cudnn-runtime-ubuntu22.04-py3
-
+FROM pytorch/pytorch:2.9.1-cuda13.0-cudnn8-runtime
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y sox libsox-fmt-all git && \
@@ -12,13 +11,13 @@ WORKDIR /app
 COPY . /app
 
 # Install PyTorch and dependencies
-RUN pip install --no-cache-dir torch==2.9.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu130
+RUN pip3 install --no-cache-dir torch==2.9.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu130
 
 # Install Flash Attention wheel
-RUN pip install --no-cache-dir https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3%2Bcu130torch2.9-cp312-cp312-linux_x86_64.whl
+RUN pip3 install --no-cache-dir https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3%2Bcu130torch2.9-cp312-cp312-linux_x86_64.whl
 
 # Install Triton (Linux version can skip this if not needed)
-RUN pip install modelscope
+RUN pip3 install modelscope
 
 # Install Qwen3-TTS package
 RUN git clone https://github.com/dffdeeq/Qwen3-TTS-streaming.git /app/qwen-tts && \
