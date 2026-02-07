@@ -27,7 +27,7 @@ from livekit.plugins import deepgram, openai, silero
 
 from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
-from tts_silero import LocalSileroTTS 
+from Qwen import Qwen3TTS
 import os
 
 logger = logging.getLogger("agent")
@@ -168,22 +168,11 @@ vad=silero.VAD.load(),
             model="deepseek-chat",
             base_url="https://api.deepseek.com/v1",
             api_key=DEEPSEEK_API_KEY,
-            
             temperature=0.2,
-            top_p=0.3,
+            top_p=0.3,),
             
-        ),
-        tts=LocalSileroTTS(
-            language="ru",
-            model_id="v5_ru",
-            speaker="baya",
-            device="cpu",
-            sample_rate=48000,
-            put_accent=True,
-            put_yo=True,
-            put_stress_homo=False,
-            put_yo_homo=True,
-        ),
+        tts=Qwen3TTS(sample_rate=24000),
+             
     )
 class Booking_Agent(Agent):
      def __init__(self, service_id: str, service_name: str, service_price: int, phone: int, *, chat_ctx: Optional[ChatContext] = None) -> None:
@@ -261,17 +250,8 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
                 top_p=0.5,
                 
             ),
-            tts=LocalSileroTTS(
-                language="ru",
-                model_id="v5_ru",
-                speaker="baya",
-                device="cpu",
-                sample_rate=48000,
-                put_accent=True,
-                put_yo=True,
-                put_stress_homo=False,
-                put_yo_homo=True,
-            ),    
+            tts=Qwen3TTS(sample_rate=24000),
+            
         
             
             
