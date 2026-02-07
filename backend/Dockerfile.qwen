@@ -1,33 +1,29 @@
-# Use CUDA runtime with Python 3.11 (PyTorch images include Python 3.11)
-FROM pytorch/pytorch:2.9.1-cuda13.0-cudnn8-runtime
+FROM nvidia/cuda:13.1.1-cudnn-runtime-ubuntu22.04
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y python3.11 python3.11-dev python3.11-venv python3-pip \
+                       git sox libsox-fmt-all && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y git sox libsox-fmt-all && \
-    rm -rf /var/lib/apt/lists/*
-
-# Copy backend files (adjust build context to ./backend)
+# Copy backend files (including QWEN model)
 COPY . /app
 
-# Install PyTorch + torchaudio (already included in PyTorch image, but ensures matching version)
-RUN pip install --no-cache-dir torch==2.9.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu130
+# Install PyTorch and dependencies
+RUN pip3 install --no-cache-dir torch==2.9.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu130
 
-# Install Flash Attention wheel for Python 3.11
-RUN pip install --no-cache-dir \
-    https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3+cu130torch2.9-cp311-cp311-linux_x86_64.whl
+# Install Flash Attention wheel
+RUN pip3 install --no-cache-dir https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.6.8/flash_attn-2.8.3%2Bcu130torch2.9-cp312-cp312-linux_x86_64.whl
 
-# Install modelscope
-RUN pip install --no-cache-dir modelscope
+# Install Triton (Linux version can skip this if not needed)
+RUN pip3 install modelscope
 
 # Install Qwen3-TTS package
-RUN git clone https://github.com/dffdeeq/Qwen3-TTS-streaming.git /app/qwen3_tts_streaming && \
-    pip install -e /app/qwen3_tts_streaming
+RUN git clone https://github.com/dffdeeq/Qwen3-TTS-streaming.git /app/qwen-tts && \
+    pip3 install -e /app/qwen-tts
 
 # Download Qwen tokenizer
 RUN python /app/qwen/download.py
-
-
-
