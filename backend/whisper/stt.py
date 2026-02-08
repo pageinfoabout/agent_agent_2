@@ -1,14 +1,16 @@
 import requests
-import io
 import numpy as np
-
-import requests
-import numpy as np
+from types import SimpleNamespace
 
 class WhisperHTTPSTT:
     def __init__(self, url: str):
         self.url = url
         self.session = requests.Session()  # reuse connections
+
+        # LiveKit expects this
+        self.capabilities = SimpleNamespace(
+            streaming=False  # we do NOT support partial streaming
+        )
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         # Safety: ensure float32
