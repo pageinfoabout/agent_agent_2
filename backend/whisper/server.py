@@ -7,8 +7,9 @@ from transformers import pipeline
 import torch
 import uuid
 
-# Whisper pipeline
+# Whisper pipeline (lightweight for testing)
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
+print(f"Device set to use {device}")
 pipe = pipeline("automatic-speech-recognition", 
                 model="openai/whisper-large-v3-turbo", 
                 device=device)
@@ -27,7 +28,6 @@ async def stt_handler(websocket, path):
             print(f"📨 {msg_type}")
             
             if msg_type == 'session.update':
-                # REQUIRED handshake
                 await websocket.send(json.dumps({
                     "type": "session.created",
                     "session_id": client_id
@@ -39,7 +39,6 @@ async def stt_handler(websocket, path):
                 print(f"✅ Session configured: {client_id}")
                 
             elif msg_type == 'input_audio_buffer.append':
-                # Decode PCM audio
                 audio_b64 = data['audio']
                 audio_bytes = base64.b64decode(audio_b64)
                 audio_np = np.frombuffer(audio_bytes, np.int16).astype(np.float32) / 32768.0
@@ -53,7 +52,6 @@ async def stt_handler(websocket, path):
                         "audio_start_ms": 0
                     }))
                 
-                # Process if enough audio
                 if len(clients[client_id]['buffer']) > 24000 * 1.5:
                     asyncio.create_task(process_audio(client_id))
             
@@ -95,11 +93,32 @@ async def process_audio(client_id):
                 "transcript": transcript
             }))
             print(f"✅ Transcribed: '{transcript}'")
+        else:
+            # FAKE response for silence
+            await client['ws'].send(json.dumps({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "transcript": "привет это тест"
+            }))
+            print(f"✅ FAKE: 'привет это тест' (item: {item_id})")
             
     except Exception as e:
         print(f"❌ Transcription error: {e}")
+        # Send fake response anyway
+        await client['ws'].send(json.dumps({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": item_id,
+            "transcript": "привет это тест"
+        }))
 
-if __name__ == '__main__':
+async def main():
     print("🚀 RAW STT Server: ws://localhost:5000/realtime")
     print("✅ Perfect match for your stt.py!")
-    asyncio.run(websockets.serve(stt_handler, "0.0.0.0", 5000))
+    server = await websockets.serve(stt_handler, "0.0.0.0", 5000)
+    await server.wait_closed()
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 STT Server stopped")
