@@ -19,10 +19,6 @@ COPY . .
 
 # Default command (overridden by Compose)
 
-
-
-
-
 ENV PYTHONPATH=/backend
 ENV PATH="/root/.local/bin:$PATH"
 
