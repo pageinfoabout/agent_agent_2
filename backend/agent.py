@@ -33,7 +33,7 @@ from tools import  get_times_by_date, create_booking, get_services, get_id_by_ph
 
 from livekit.agents.tts.stream_adapter import StreamAdapter
 from tts_silero import LocalSileroTTS
-from Qwen.stt import WhisperHFStream
+from whisper.stt import WhisperHTTPSTT
 
 
 import os
@@ -84,8 +84,9 @@ class HFStreamAdapter:
 
 
 # --- instantiate HF stream ---
-hf_stt = WhisperHFStream(model_id="openai/whisper-large-v3-turbo", device="cuda:0")
-stt_adapter = HFStreamAdapter(hf_stt)
+stt_adapter = WhisperHTTPSTT(
+    url="http://YOUR_SERVER_IP:5000/transcribe"
+)
 
 @dataclass
 class UserData:
