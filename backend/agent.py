@@ -22,15 +22,16 @@ from livekit.agents import (
     RunContext,
     cli,
     room_io,
+    tts
 )
 from livekit.plugins import deepgram, openai, silero
-
+import asyncio
 from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
 
 from livekit.agents.tts.stream_adapter import StreamAdapter
 from Qwen.tts import Qwen3TTS, Qwen3StreamAdapter 
-
+from Qwen.stt import WhisperHFStream
 
 
 import os
@@ -49,7 +50,30 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 server = AgentServer()
 
 qwen_tts = Qwen3TTS(sample_rate=24000)
+
+class Qwen3StreamAdapter(StreamAdapter):
+    def __init__(self, tts_instance: tts.TTS):
+        # Pass tts_instance to the abstract base class
+        super().__init__(tts=tts_instance)
+        self._tts = tts_instance
+
+    def synthesize(self, text: str, conn_options=None):
+        # Just delegate to your existing Qwen3TTS
+        return self._tts.synthesize(text, conn_options=conn_options)
+    
 streaming_tts = Qwen3StreamAdapter(qwen_tts)
+# --- HFStreamAdapter for async integration ---
+class HFStreamAdapter:
+    def __init__(self, hf_stream):
+        self.hf_stream = hf_stream
+
+    async def receive_audio(self, audio_chunk: np.ndarray):
+        # Run in thread to avoid blocking async event loop
+        await asyncio.to_thread(self.hf_stream.process_chunk, audio_chunk)
+
+# --- instantiate HF stream ---
+hf_stt = WhisperHFStream(model_id="openai/whisper-large-v3-turbo", device="cuda:0")
+stt_adapter = HFStreamAdapter(hf_stt)
 
 @dataclass
 class UserData:
@@ -167,11 +191,7 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 ,
 tools=[get_services],
 vad=silero.VAD.load(),
-        stt=deepgram.STT(
-            model="nova-3",
-            language="ru",
-            api_key=DEEPGRAM_API_KEY,
-        ),
+        stt=stt_adapter,
         llm=openai.LLM.with_deepseek(
             model="deepseek-chat",
             base_url="https://api.deepseek.com/v1",

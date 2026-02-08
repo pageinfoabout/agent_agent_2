@@ -4,9 +4,8 @@ pymongo
 python-dotenv
 python-multipart
 pytz
-tritonclient
-grpcio 
-grpcio-tools
+
+
 pytz
 supabase
 
