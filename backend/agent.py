@@ -33,7 +33,7 @@ from tools import  get_times_by_date, create_booking, get_services, get_id_by_ph
 from transformers import pipeline
 from livekit.agents.tts.stream_adapter import StreamAdapter
 from tts_silero import LocalSileroTTS
-from Qwen.stt import WhisperSTT
+from whisper.stt import WhisperSTT
 
 
 

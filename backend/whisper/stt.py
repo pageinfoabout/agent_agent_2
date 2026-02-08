@@ -1,39 +1,146 @@
-# stt_adapter.py
-import numpy as np
-import requests
+# whisper_stt.py
+from __future__ import annotations
 import asyncio
+import dataclasses
+import weakref
+from dataclasses import dataclass
+from typing import Any, Sequence, Optional
 
-class WhisperHTTPSTT:
-    def __init__(self, url: str, buffer_size: int = 16000):
-        """
-        url: Flask server URL
-        buffer_size: number of samples to batch (~1s at 16kHz)
-        """
-        self.url = url
-        self.buffer_size = buffer_size
-        self.buffer = np.array([], dtype=np.float32)
+import torch
+from transformers import pipeline
+from livekit import rtc
+from livekit.agents import stt, utils
+from livekit.agents.types import NotGivenOr, NOT_GIVEN
+from livekit.agents.voice.io import TimedString
+from livekit.agents.utils import AudioBuffer
 
-    def add_chunk(self, audio_chunk: np.ndarray):
-        """Append audio chunk to buffer"""
-        self.buffer = np.concatenate([self.buffer, audio_chunk])
+@dataclass
+class STTOptions:
+    language: str
+    sample_rate: int
+    interim_results: bool = True
+    chunk_length_s: float = 10.0  # chunk length for streaming
 
-    async def transcribe_buffer(self):
-        """Send current buffer to Flask server"""
-        if len(self.buffer) == 0:
-            return ""
+class WhisperSTT(stt.STT):
+    def __init__(
+        self,
+        pipe: pipeline,
+        language: str = "en",
+        sample_rate: int = 16000,
+        chunk_length_s: float = 10.0,
+    ):
+        super().__init__(
+            capabilities=stt.STTCapabilities(
+                streaming=True,
+                interim_results=True,
+                diarization=False,
+                aligned_transcript="word",
+            )
+        )
+        self.pipe = pipe
+        self._opts = STTOptions(
+            language=language,
+            sample_rate=sample_rate,
+            chunk_length_s=chunk_length_s,
+        )
+        self._streams = weakref.WeakSet()
 
-        # Convert float32 back to int16 for Flask server
-        audio_int16 = (self.buffer * 32768.0).astype(np.int16).tobytes()
-        files = {'audio': ('chunk.wav', audio_int16, 'audio/wav')}
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, lambda: requests.post(self.url, files=files))
-        self.buffer = np.array([], dtype=np.float32)  # clear buffer
-        return response.json().get("text", "")
+    @property
+    def provider(self) -> str:
+        return "Whisper"
 
-    async def process_chunk(self, audio_chunk: np.ndarray):
-        """Add chunk and transcribe if buffer is full"""
-        self.add_chunk(audio_chunk)
-        if len(self.buffer) >= self.buffer_size:
-            text = await self.transcribe_buffer()
-            if text:
-                print("Transcribed:", text)
+    @property
+    def model(self) -> str:
+        return str(self.pipe.model.config._name_or_path)
+
+    async def _recognize_impl(
+        self,
+        buffer: AudioBuffer,
+        *,
+        language: NotGivenOr[str] = NOT_GIVEN,
+        conn_options: Any = None,
+    ) -> stt.SpeechEvent:
+        # Merge options
+        lang = self._opts.language if not is_given(language) else language
+        audio_bytes = rtc.combine_audio_frames(buffer).to_wav_bytes()
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+            f.write(audio_bytes)
+            f.flush()
+            result = self.pipe(f.name)
+
+        # Convert to STT event
+        return stt.SpeechEvent(
+            type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+            request_id="local_whisper",
+            alternatives=[stt.SpeechData(
+                language=lang,
+                start_time=0,
+                end_time=0,
+                confidence=result.get("score", 1.0),
+                text=result["text"],
+                words=None,  # Whisper does not return per-word timing
+            )]
+        )
+
+    def stream(
+        self,
+        *,
+        language: NotGivenOr[str] = NOT_GIVEN,
+        conn_options: Any = None,
+    ) -> WhisperSpeechStream:
+        opts = dataclasses.replace(self._opts)
+        if is_given(language):
+            opts.language = language
+        stream = WhisperSpeechStream(stt=self, opts=opts)
+        self._streams.add(stream)
+        return stream
+
+def is_given(val) -> bool:
+    return val is not NOT_GIVEN
+
+class WhisperSpeechStream(stt.SpeechStream):
+    def __init__(self, *, stt: WhisperSTT, opts: STTOptions):
+        super().__init__(stt=stt, conn_options=None, sample_rate=opts.sample_rate)
+        self._opts = opts
+        self._speaking = False
+        self._input_queue = asyncio.Queue()
+        self._stop_event = asyncio.Event()
+
+    async def _run(self) -> None:
+        buffer = AudioBuffer(sample_rate=self._opts.sample_rate)
+        chunk_frames = int(self._opts.chunk_length_s * self._opts.sample_rate)
+
+        while True:
+            data = await self._input_queue.get()
+            if isinstance(data, self._FlushSentinel):
+                # Process remaining audio
+                if buffer.num_frames > 0:
+                    await self._process_chunk(buffer)
+                    buffer.clear()
+                break
+
+            buffer.add_frames(data.data)
+            # Process chunk if enough frames accumulated
+            while buffer.num_frames >= chunk_frames:
+                chunk = buffer.pop_frames(chunk_frames)
+                await self._process_chunk(chunk)
+
+    async def _process_chunk(self, buffer: AudioBuffer):
+        # Mark start of speech
+        if not self._speaking:
+            self._speaking = True
+            self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH))
+
+        # Recognize with Whisper
+        event = await self.stt._recognize_impl(buffer, language=self._opts.language)
+        self._event_ch.send_nowait(event)
+
+        # Mark end of speech
+        self._speaking = False
+        self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
+
+    async def aclose(self):
+        await self._input_queue.put(self._FlushSentinel())
+        await super().aclose()
