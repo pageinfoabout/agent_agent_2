@@ -90,28 +90,43 @@ class WhisperSTT(stt.STT):
         *,
         language: NotGivenOr[str] = NOT_GIVEN,
         conn_options: Any = None,
-    ) -> WhisperSpeechStream:
+    ) -> "WhisperSpeechStream":
         opts = dataclasses.replace(self._opts)
         if is_given(language):
             opts.language = language
-        stream = WhisperSpeechStream(stt=self, opts=opts)
+
+        stream = WhisperSpeechStream(
+            stt=self,
+            opts=opts,
+            conn_options=conn_options,
+        )
         self._streams.add(stream)
         return stream
+
 
 def is_given(val) -> bool:
     return val is not NOT_GIVEN
 
 class WhisperSpeechStream(stt.SpeechStream):
-    def __init__(self, *, stt: WhisperSTT, opts: STTOptions):
+    class _FlushSentinel:
+        pass
+
+    def __init__(
+        self,
+        *,
+        stt: WhisperSTT,
+        opts: STTOptions,
+        conn_options: Any,
+    ):
         super().__init__(
-    stt=stt,
-    conn_options=stt._default_conn_options(),
-    sample_rate=opts.sample_rate,
-)
+            stt=stt,
+            conn_options=conn_options,
+            sample_rate=opts.sample_rate,
+        )
         self._opts = opts
         self._speaking = False
         self._input_queue = asyncio.Queue()
-        self._stop_event = asyncio.Event()
+
 
     async def _run(self) -> None:
         buffer = AudioBuffer(sample_rate=self._opts.sample_rate)
