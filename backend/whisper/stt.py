@@ -106,18 +106,8 @@ class STT(stt.STT):
             self._opts.noise_reduction_type = noise_reduction_type
 
         self._client = client or httpx.AsyncClient(
-            max_retries=0,
-            api_key=api_key if is_given(api_key) else None,
-            base_url=base_url if is_given(base_url) else None,
-            http_client=httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=15.0, read=5.0, write=5.0, pool=5.0),
-                follow_redirects=True,
-                limits=httpx.Limits(
-                    max_connections=50,
-                    max_keepalive_connections=50,
-                    keepalive_expiry=120,
-                ),
-            ),
+            timeout=httpx.Timeout(60.0, connect=15.0),
+            limits=httpx.Limits(max_keepalive_connections=20)
         )
 
         self._streams = weakref.WeakSet[SpeechStream]()
