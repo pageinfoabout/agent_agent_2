@@ -13,7 +13,7 @@ from livekit.agents import stt, utils
 from livekit.agents.types import NotGivenOr, NOT_GIVEN
 from livekit.agents.voice.io import TimedString
 from livekit.agents.utils import AudioBuffer
-from livekit.agents.stt import STTConnectionOptions
+from livekit.agents.stt.connection import STTConnectionOptions
 
 @dataclass
 class STTOptions:
