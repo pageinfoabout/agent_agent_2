@@ -51,7 +51,7 @@ server = AgentServer()
 qwen_tts = Qwen3TTS(sample_rate=24000)
 
 # Wrap it in a StreamAdapter for LiveKit streaming
-streaming_tts = StreamAdapter(qwen_tts)
+streaming_tts = StreamAdapter.wrap(qwen_tts)
 
 @dataclass
 class UserData:
