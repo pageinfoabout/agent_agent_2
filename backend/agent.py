@@ -64,31 +64,23 @@ class HFStreamAdapter:
         self._detected_language = ""
 
     async def receive_audio(self, audio_chunk: np.ndarray):
-        """Process incoming audio chunk in a thread-safe manner."""
         await asyncio.to_thread(self.hf_stream.process_chunk, audio_chunk)
 
-    # Provide the async context manager LiveKit expects
-    async def stream(self, conn_options=None):
+    def stream(self, conn_options=None):
+        """Return an async context manager for LiveKit streaming."""
+        adapter = self
+
         class Stream:
-            def __init__(self, adapter):
-                self.adapter = adapter
-                self._running = True
-
             async def __aenter__(self):
-                # Could start background tasks here if needed
-                return self
+                return self  # this is what LiveKit will use
 
-            async def __aexit__(self, exc_type, exc, tb):
-                self._running = False
-                # Cleanup if necessary
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass  # cleanup if needed
 
             async def receive_audio(self, audio_chunk: np.ndarray):
-                # Forward audio to underlying STT
-                await self.adapter.receive_audio(audio_chunk)
+                await adapter.receive_audio(audio_chunk)
 
-        return Stream(self)
-
-
+        return Stream()
 
 
 # --- instantiate HF stream ---
