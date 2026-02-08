@@ -1,92 +1,39 @@
-import asyncio
-import time
+# stt_adapter.py
 import numpy as np
 import requests
-from types import SimpleNamespace
-from livekit.agents.stt import stt  # Make sure LiveKit stt base classes are imported
+import asyncio
 
-class WhisperHTTPS(stt.RecognizeStream):
-    """
-    Stream-like wrapper for HTTP Whisper batch server.
-    Mimics the behavior of streaming STT for LiveKit.
-    """
-
-    def __init__(self, url: str, sample_rate: int = 16000):
-        super().__init__(stt=None, sample_rate=sample_rate)
+class WhisperHTTPSTT:
+    def __init__(self, url: str, buffer_size: int = 16000):
+        """
+        url: Flask server URL
+        buffer_size: number of samples to batch (~1s at 16kHz)
+        """
         self.url = url
-        self.session = requests.Session()
+        self.buffer_size = buffer_size
+        self.buffer = np.array([], dtype=np.float32)
 
-        # LiveKit expects capabilities and event support
-        self.capabilities = SimpleNamespace(streaming=True)
-        self._event_ch = asyncio.Queue()  # Used by _emit_final / _emit_interim
-        self._last_interim = ""
-        self._last_interim_time = 0.0
+    def add_chunk(self, audio_chunk: np.ndarray):
+        """Append audio chunk to buffer"""
+        self.buffer = np.concatenate([self.buffer, audio_chunk])
 
-    # Fake `.on` to satisfy StreamAdapter
-    def on(self, event_name, callback):
-        # HTTP STT does not generate metrics events
-        pass
+    async def transcribe_buffer(self):
+        """Send current buffer to Flask server"""
+        if len(self.buffer) == 0:
+            return ""
 
-    async def run_stream(self, audio_chunks: asyncio.Queue):
-        """
-        Accepts audio chunks from LiveKit (VADed segments)
-        Each chunk is a numpy float32 array, sends to batch HTTP Whisper,
-        emits interim + final events.
-        """
-        while True:
-            chunk = await audio_chunks.get()
-            if chunk is None:  # End of stream
-                # Emit final if last interim exists
-                if self._last_interim:
-                    self._emit_final(self._last_interim)
-                break
+        # Convert float32 back to int16 for Flask server
+        audio_int16 = (self.buffer * 32768.0).astype(np.int16).tobytes()
+        files = {'audio': ('chunk.wav', audio_int16, 'audio/wav')}
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: requests.post(self.url, files=files))
+        self.buffer = np.array([], dtype=np.float32)  # clear buffer
+        return response.json().get("text", "")
 
-            # Convert chunk to PCM16 bytes
-            audio_bytes = (np.clip(chunk, -1, 1) * 32767).astype(np.int16).tobytes()
-
-            # Send to Flask Whisper server
-            try:
-                response = self.session.post(
-                    self.url,
-                    files={"audio": ("audio.pcm", audio_bytes, "application/octet-stream")},
-                    timeout=30
-                )
-                response.raise_for_status()
-                text = response.json().get("text", "").strip()
-            except Exception as e:
-                print(f"[STT] HTTP error: {e}")
-                continue
-
-            # Emit interim event
-            if text and text != self._last_interim:
-                self._last_interim = text
-                self._last_interim_time = time.time()
-                self._emit_interim(text)
-
-            # Optional: short delay to simulate streaming chunks
-            await asyncio.sleep(0.05)
-
-            # Emit final after each chunk (or could batch multiple chunks)
+    async def process_chunk(self, audio_chunk: np.ndarray):
+        """Add chunk and transcribe if buffer is full"""
+        self.add_chunk(audio_chunk)
+        if len(self.buffer) >= self.buffer_size:
+            text = await self.transcribe_buffer()
             if text:
-                self._emit_final(text)
-
-    def _emit_final(self, text: str):
-        try:
-            event = stt.SpeechEvent(
-                type=stt.SpeechEventType.FINAL_TRANSCRIPT,
-                alternatives=[stt.SpeechData(language="ru", text=text)],
-            )
-            self._event_ch.put_nowait(event)
-            self._last_interim = ""
-        except Exception as e:
-            print(f"[STT] Failed to emit final: {e}")
-
-    def _emit_interim(self, text: str):
-        try:
-            event = stt.SpeechEvent(
-                type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
-                alternatives=[stt.SpeechData(language="ru", text=text)],
-            )
-            self._event_ch.put_nowait(event)
-        except Exception as e:
-            print(f"[STT] Failed to emit interim: {e}")
+                print("Transcribed:", text)

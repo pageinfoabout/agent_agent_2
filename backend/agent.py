@@ -30,10 +30,11 @@ import numpy as np
 import asyncio
 from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
-
+from transformers import pipeline
 from livekit.agents.tts.stream_adapter import StreamAdapter
 from tts_silero import LocalSileroTTS
-from whisper.stt import WhisperHTTPSTT
+from Qwen.stt import WhisperSTT
+
 
 
 import os
@@ -51,42 +52,15 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 
 server = AgentServer()
 
-
-class Capabilities:
-    def __init__(self, streaming: bool = True):
-        self.streaming = streaming
-
-class HFStreamAdapter:
-    def __init__(self, hf_stream):
-        self.hf_stream = hf_stream
-        self.capabilities = Capabilities(streaming=True)
-        self._last_interim = ""
-        self._detected_language = ""
-
-    async def receive_audio(self, audio_chunk: np.ndarray):
-        await asyncio.to_thread(self.hf_stream.process_chunk, audio_chunk)
-
-    def stream(self, conn_options=None):
-        """Return an async context manager for LiveKit streaming."""
-        adapter = self
-
-        class Stream:
-            async def __aenter__(self):
-                return self  # this is what LiveKit will use
-
-            async def __aexit__(self, exc_type, exc_val, exc_tb):
-                pass  # cleanup if needed
-
-            async def receive_audio(self, audio_chunk: np.ndarray):
-                await adapter.receive_audio(audio_chunk)
-
-        return Stream()
-
-
-# --- instantiate HF stream ---
-stt_adapter = WhisperHTTPSTT(
-    url="http://YOUR_SERVER_IP:5000/transcribe"
+whisper_pipe = pipeline(
+    "automatic-speech-recognition",
+    model="openai/whisper-large-v3-turbo",
+    device="cpu",  # or 0 for GPU
 )
+
+# Wrap it in your STT adapter
+stt_adapter = WhisperSTT(pipe=whisper_pipe, language="ru") 
+
 
 @dataclass
 class UserData:
