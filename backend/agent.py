@@ -29,6 +29,7 @@ from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
 
 from livekit.agents.tts.stream_adapter import StreamAdapter
+from livekit.agents.tts.tokenize import SentenceTokenizer
 from Qwen.tts import Qwen3TTS
 
 
@@ -50,8 +51,8 @@ server = AgentServer()
 
 qwen_tts = Qwen3TTS(sample_rate=24000)
 
-# Wrap it in a StreamAdapter for LiveKit streaming
-streaming_tts = StreamAdapter.wrap(qwen_tts)
+sentence_tokenizer = SentenceTokenizer()
+streaming_tts = StreamAdapter(qwen_tts, sentence_tokenizer)
 
 @dataclass
 class UserData:
