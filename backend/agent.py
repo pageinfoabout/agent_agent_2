@@ -52,8 +52,6 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 server = AgentServer()
 
 
-
-
 class Capabilities:
     def __init__(self, streaming: bool = True):
         self.streaming = streaming
@@ -61,9 +59,11 @@ class Capabilities:
 class HFStreamAdapter:
     def __init__(self, hf_stream):
         self.hf_stream = hf_stream
+        # LiveKit expects this attribute
         self.capabilities = Capabilities(streaming=True)
 
     async def receive_audio(self, audio_chunk: np.ndarray):
+        # Run in a separate thread so the async loop is not blocked
         await asyncio.to_thread(self.hf_stream.process_chunk, audio_chunk)
 
 
