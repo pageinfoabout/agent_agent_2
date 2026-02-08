@@ -259,10 +259,12 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 """,
             tools=[get_times_by_date, create_booking, get_id_by_phone, get_cupon, delete_booking],
             vad=silero.VAD.load(),
-            stt=deepgram.STT(
-                model="nova-3",
+            stt = STT(
+                base_url="http://localhost:5000",  # Your Flask server
+                api_key="dummy-token",  # Optional, ignored by Flask
                 language="ru",
-                api_key=DEEPGRAM_API_KEY,
+                model="whisper-large-v3-turbo",
+                use_realtime=True
             ),
             llm=openai.LLM.with_deepseek(
                 model="deepseek-chat",
