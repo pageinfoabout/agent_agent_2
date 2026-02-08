@@ -32,10 +32,7 @@ from livekit.agents.tts.stream_adapter import StreamAdapter
 from Qwen.tts import Qwen3TTS
 
 
-qwen_tts = Qwen3TTS(sample_rate=24000)
 
-# Wrap it in a StreamAdapter for LiveKit streaming
-streaming_tts = StreamAdapter(qwen_tts)
 import os
 
 logger = logging.getLogger("agent")
@@ -50,6 +47,11 @@ LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 
 server = AgentServer()
+
+qwen_tts = Qwen3TTS(sample_rate=24000)
+
+# Wrap it in a StreamAdapter for LiveKit streaming
+streaming_tts = StreamAdapter(qwen_tts)
 
 @dataclass
 class UserData:
