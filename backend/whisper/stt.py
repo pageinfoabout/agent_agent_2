@@ -1,167 +1,105 @@
-# whisper_stt.py
-from __future__ import annotations
 import asyncio
 import dataclasses
-import weakref
+import numpy as np
 from dataclasses import dataclass
-from typing import Any, Sequence, Optional
+from typing import Any
 
-import torch
 from transformers import pipeline
-from livekit import rtc
-from livekit.agents import stt, utils
-from livekit.agents.types import NotGivenOr, NOT_GIVEN
-from livekit.agents.voice.io import TimedString
-from livekit.agents.voice.io import AudioBuffer
+from livekit.agents import stt
+from livekit.agents.types import NOT_GIVEN, NotGivenOr
 
 
+# ---------------- OPTIONS ----------------
 
 @dataclass
 class STTOptions:
-    language: str
-    sample_rate: int
-    interim_results: bool = True
-    chunk_length_s: float = 10.0  # chunk length for streaming
+    language: str = "en"
+    sample_rate: int = 16000
+
+
+# ---------------- STT ----------------
 
 class WhisperSTT(stt.STT):
-    def __init__(
-        self,
-        pipe: pipeline,
-        language: str = "en",
-        sample_rate: int = 16000,
-        chunk_length_s: float = 10.0,
-    ):
+    def __init__(self, pipe: pipeline):
         super().__init__(
             capabilities=stt.STTCapabilities(
                 streaming=True,
-                interim_results=True,
-                diarization=False,
-                aligned_transcript="word",
+                interim_results=False,
             )
         )
         self.pipe = pipe
-        self._opts = STTOptions(
-            language=language,
-            sample_rate=sample_rate,
-            chunk_length_s=chunk_length_s,
-        )
-        self._streams = weakref.WeakSet()
+        self._opts = STTOptions()
 
     @property
     def provider(self) -> str:
-        return "Whisper"
+        return "whisper"
 
     @property
     def model(self) -> str:
-        return str(self.pipe.model.config._name_or_path)
+        return "local-whisper"
 
-    async def _recognize_impl(
-        self,
-        buffer: AudioBuffer,
-        *,
-        language: NotGivenOr[str] = NOT_GIVEN,
-        conn_options: Any = None,
-    ) -> stt.SpeechEvent:
-        # Merge options
-        lang = self._opts.language if not is_given(language) else language
-        audio_bytes = rtc.combine_audio_frames(buffer).to_wav_bytes()
-
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".wav") as f:
-            f.write(audio_bytes)
-            f.flush()
-            result = self.pipe(f.name)
-
-        # Convert to STT event
-        return stt.SpeechEvent(
-            type=stt.SpeechEventType.FINAL_TRANSCRIPT,
-            request_id="local_whisper",
-            alternatives=[stt.SpeechData(
-                language=lang,
-                start_time=0,
-                end_time=0,
-                confidence=result.get("score", 1.0),
-                text=result["text"],
-                words=None,  # Whisper does not return per-word timing
-            )]
-        )
-
-    def stream(
-        self,
-        *,
-        language: NotGivenOr[str] = NOT_GIVEN,
-        conn_options: Any = None,
-    ) -> "WhisperSpeechStream":
+    def stream(self, *, language: NotGivenOr[str] = NOT_GIVEN, conn_options: Any = None):
         opts = dataclasses.replace(self._opts)
-        if is_given(language):
+        if language is not NOT_GIVEN:
             opts.language = language
 
-        stream = WhisperSpeechStream(
-            stt=self,
-            opts=opts,
-            conn_options=conn_options,
-        )
-        self._streams.add(stream)
-        return stream
+        return WhisperSpeechStream(stt=self, opts=opts)
 
 
-def is_given(val) -> bool:
-    return val is not NOT_GIVEN
+# ---------------- STREAM ----------------
 
 class WhisperSpeechStream(stt.SpeechStream):
-    class _FlushSentinel:
+    class _Flush:
         pass
 
-    def __init__(
-        self,
-        *,
-        stt: WhisperSTT,
-        opts: STTOptions,
-        conn_options: Any,
-    ):
-        super().__init__(
-            stt=stt,
-            conn_options=conn_options,
-            sample_rate=opts.sample_rate,
-        )
-        self._opts = opts
-        self._speaking = False
-        self._input_queue = asyncio.Queue()
+    def __init__(self, *, stt: WhisperSTT, opts: STTOptions):
+        super().__init__(stt=stt, conn_options=None, sample_rate=opts.sample_rate)
+        self.opts = opts
+        self.queue = asyncio.Queue()
+        self.samples: list[np.ndarray] = []
 
-
-    async def _run(self) -> None:
-        buffer = AudioBuffer(sample_rate=self._opts.sample_rate)
-        chunk_frames = int(self._opts.chunk_length_s * self._opts.sample_rate)
-
+    async def _run(self):
         while True:
-            data = await self._input_queue.get()
-            if isinstance(data, self._FlushSentinel):
-                # Process remaining audio
-                if buffer.num_frames > 0:
-                    await self._process_chunk(buffer)
-                    buffer.clear()
+            frame = await self.queue.get()
+
+            if isinstance(frame, self._Flush):
+                if self.samples:
+                    await self._transcribe()
                 break
 
-            buffer.add_frames(data.data)
-            # Process chunk if enough frames accumulated
-            while buffer.num_frames >= chunk_frames:
-                chunk = buffer.pop_frames(chunk_frames)
-                await self._process_chunk(chunk)
+            pcm = np.frombuffer(frame.data, dtype=np.int16)
+            self.samples.append(pcm)
 
-    async def _process_chunk(self, buffer: AudioBuffer):
-        # Mark start of speech
-        if not self._speaking:
-            self._speaking = True
-            self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH))
+            # transcribe once we have ~1s audio
+            if sum(len(x) for x in self.samples) >= self.opts.sample_rate:
+                await self._transcribe()
 
-        # Recognize with Whisper
-        event = await self.stt._recognize_impl(buffer, language=self._opts.language)
-        self._event_ch.send_nowait(event)
+    async def _transcribe(self):
+        audio = np.concatenate(self.samples)
+        self.samples.clear()
 
-        # Mark end of speech
-        self._speaking = False
-        self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
+        result = self.stt.pipe(
+            audio.astype(np.float32) / 32768.0,
+            sampling_rate=self.opts.sample_rate,
+        )
+
+        self._event_ch.send_nowait(
+            stt.SpeechEvent(
+                type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                request_id="whisper",
+                alternatives=[
+                    stt.SpeechData(
+                        text=result["text"],
+                        language=self.opts.language,
+                        confidence=1.0,
+                        start_time=0,
+                        end_time=0,
+                        words=None,
+                    )
+                ],
+            )
+        )
 
     async def aclose(self):
-        await self._input_queue.put(self._FlushSentinel())
+        await self.queue.put(self._Flush())
         await super().aclose()
