@@ -106,7 +106,7 @@ class STT(stt.STT):
             self._opts.noise_reduction_type = noise_reduction_type
 
         self._client = client or httpx.AsyncClient(
-            max_retries=0,
+       
             api_key=api_key if is_given(api_key) else None,
             base_url=base_url if is_given(base_url) else None,
             http_client=httpx.AsyncClient(
