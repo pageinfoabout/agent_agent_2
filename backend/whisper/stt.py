@@ -5,7 +5,7 @@ import requests
 from types import SimpleNamespace
 from livekit.agents.stt import stt  # Make sure LiveKit stt base classes are imported
 
-class WhisperHTTPStream(stt.RecognizeStream):
+class WhisperHTTPS(stt.RecognizeStream):
     """
     Stream-like wrapper for HTTP Whisper batch server.
     Mimics the behavior of streaming STT for LiveKit.
