@@ -1,15 +1,14 @@
 from pathlib import Path
-import os
+
+from livekit import api
+from livekit.api import DeleteRoomRequest
+from livekit.agents.beta.workflows.dtmf_inputs import GetDtmfTask
 import logging
 import pytz
-from datetime import datetime
+import datetime
+import json
 from dataclasses import dataclass, field
 from typing import Optional
-import asyncio
-import numpy as np
-
-import torch
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
 from dotenv import load_dotenv
 
@@ -17,109 +16,174 @@ from livekit.agents import (
     Agent,
     function_tool,
     AgentServer,
+    AgentSession,
     JobContext,
     ChatContext,
     RunContext,
     cli,
-    room_io
+    room_io,
+    tts
 )
-from livekit.plugins import silero, openai
+from livekit.plugins import deepgram, openai, silero
 
+import numpy as np
+import asyncio
+from datetime import datetime
+from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
+
+from livekit.agents.tts.stream_adapter import StreamAdapter
 from tts_silero import LocalSileroTTS
-from tools import get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
+from whisper.stt import STT
+
+
+import os
 
 logger = logging.getLogger("agent")
 load_dotenv()
-
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+# check if storage already exists
+THIS_DIR = Path(__file__).parent
+# Load environment variables
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 
 server = AgentServer()
 
-# --- Load Whisper large locally ---
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
-torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-model_id = "openai/whisper-large-v3-turbo"
 
-model = AutoModelForSpeechSeq2Seq.from_pretrained(
-    model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
-)
-model.to(device)
-
-processor = AutoProcessor.from_pretrained(model_id)
-
-whisper_pipe = pipeline(
-    "automatic-speech-recognition",
-    model=model,
-    tokenizer=processor.tokenizer,
-    feature_extractor=processor.feature_extractor,
-    torch_dtype=torch_dtype,
-    device=device,
-)
-
-# --- STT Adapter ---
-class LocalWhisperSTT:
-    def __init__(self, pipeline):
-        self.pipe = pipeline
-
-    async def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
-        result = self.pipe(audio, sampling_rate=sample_rate)
-        return result["text"]
-
-stt_adapter = LocalWhisperSTT(whisper_pipe)
-
-# --- User Data ---
 @dataclass
 class UserData:
     personas: dict[str, Agent] = field(default_factory=dict)
     prev_agent: Optional[Agent] = None
     ctx: Optional[JobContext] = None
 
-    phone: Optional[str] = None
-    service_id: Optional[str] = None
-    service_name: Optional[str] = None
-    service_price: Optional[int] = None
+    phone: str | None = None
+
+    service_id: str | None = None
+    service_name: str | None = None
+    service_price: int | None = None
+
+    def summarize(self) -> str:
+        return "Пациент и информация о сессии."
 
 RunContext_T = RunContext[UserData]
 
-# --- Main Agent ---
+print(RunContext_T)
+
 class Main_Agent(Agent):
     @function_tool
-    async def transfer_to_booking(
-        self, ctx: RunContext[UserData], service_id: str, service_name: str, service_price: int
-    ):
+    async def transfer_to_booking(self, ctx: RunContext[UserData], service_id : str, service_name : str, service_price : int) -> str:
+        """
+        Вызывается, когда услуга определена. Передает пациента агенту записи.
+        Args:
+        service_data: JSON с данными услуги {"id": "1", "name": "Лечение кариеса", "price": 5000}
+        
+        **🚨 КОГДА УСЛУГА ОПРЕДЕЛЕНА через get_services():**
+
+        1. Предложи пациенту услугу из списка
+        2. Получи подтверждение  
+        3. **ВЫЗОВИ transfer_to_booking** с JSON:
+        {{"id": "1", "name": "Лечение кариеса", "price": 5000}}
+
+        text
+
+        ** НЕ записывай сама! Только передавай агенту записи! **
+    
+        """
+    
         userdata = ctx.userdata
+        # парсим и сохраняем услугу в userdata
         phone = userdata.phone
+       
         userdata.service_id = service_id
         userdata.service_name = service_name
         userdata.service_price = int(service_price)
-        print(f"🔔 Service: {service_name}, Price: {service_price}, Phone: {phone}")
-        return Booking_Agent(service_id, service_name, service_price, phone), "Как вас зовут?"
+        print(f"🔔 вот услуга: {service_name} и цена {service_price} рублей.  Вот номер телефона: {phone}")
 
-    def __init__(self):
+
         
-        super().__init__(
-            instructions=f"""
-Ты — ИИ менеджер стоматологической клиники Алиф Дэнт. Тебя зовут Анита, общаешься от лица женщины.
-Сегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")}
+        return Booking_Agent(service_id, service_name, service_price, phone), "Как вас Зовут?."
 
-Задача: выяснить жалобу пациента, определить услугу и вызвать transfer_to_booking.
-""",
-            tools=[get_services],
-            vad=silero.VAD.load(),
-            stt=stt_adapter,
-            llm=openai.LLM.with_deepseek(
-                model="deepseek-chat",
-                base_url="https://api.deepseek.com/v1",
-                api_key=DEEPSEEK_API_KEY,
-                temperature=0.2,
-                top_p=0.3,
+    def __init__(self) -> None:
+       
+        super().__init__(
+            instructions= 
+            
+            f"""
+Ты — И И менеджер стоматологической клиники Алиф Дэнт.
+Тебя зовут Анита. Ты общаешься от лица женщины.
+
+Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")}
+
+Твоя основная задача — вежливо и спокойно пообщаться с пациентом, выяснить его жалобу или потребность и определить, к какому специалисту и на какую услугу его необходимо записать. Пациент может не знать названия услуг или врачей, поэтому ты должна помогать ему с выбором, задавая понятные наводящие вопросы.
+──────────────── 
+ОСОБО ВАЖНО. ОБЯЗАТЕЛЬНО К ИСПОЛНЕНИЮ
+────────────────
+
+Это ключевые правила. Они имеют наивысший приоритет и не могут быть нарушены.
+
+1. НЕ используйте цифры в ответах и знаки %№@*&^%$#@
+2. ВСЕГДА соблюдай знаки препинания и правила русского языка:
+3. При произнесении дат, чисел, сумм - всегда используй слова:
+   - "две тысячи двадцать шестой год" (вместо "2026 год")
+   - "первое января" (вместо "1 января")
+   - "второе января" (вместо "2 января")
+   - "пятнадцатое марта" (вместо "15 марта")
+
+— речь должна быть максимально простой и понятной для обычного пациента
+— ответы должны быть короткими, чёткими и по делу
+— нельзя использовать длинные объяснения и сложные формулировки
+— нельзя повторяться
+— нельзя переформулировать один и тот же вопрос разными словами
+— каждое сообщение должно быть небольшим по объёму
+— один вопрос или одна мысль за одно сообщение
+
+Если эти правила нарушены, диалог считается неверным.
+
+────────────────
+
+Алгоритм работы с пациентом
+
+— поздоровайся и представься по имени
+
+— мягко выясни причину обращения, задавая открытые вопросы
+— ты должна понять, что именно беспокоит пациента и какой специалист ему нужен
+- испольщзуй get_services чтобы узнать актуальный список услуг клиники и подобрать подходящую для пациента
+— если пациент сомневается, предлагай варианты и объясняй их простыми словами
+- пациент может ошибаться в названии услуги или врача, всегда помогай ему 
+— на основании ответов определи подходящую услугу и специалиста
+
+Примеры наводящих вопросов
+— Что вас беспокоит сейчас
+ 
+— Нужен ли вам осмотр, лечение или консультация
+
+Твоя цель — чтобы пациент почувствовал заботу, понял, что его слышат, и получил правильное направление к нужному специалисту клиники.
+
+ЗАПОМНИ ВАЖНО !!! 
+
+После того, как ты определишь услугу, вызови функцию transfer_to_booking с JSON-данными услуги
+"""
+,
+tools=[get_services],
+vad=silero.VAD.load(),
+        stt = STT(
+                base_url="http://localhost:5000",  # Your Flask server
+                api_key="dummy-token",  # Optional, ignored by Flask
+                language="ru",
+                model="whisper-large-v3-turbo",
+                use_realtime=True
             ),
-            tts=LocalSileroTTS(
+        llm=openai.LLM.with_deepseek(
+            model="deepseek-chat",
+            base_url="https://api.deepseek.com/v1",
+            api_key=DEEPSEEK_API_KEY,
+            temperature=0.2,
+            top_p=0.3,),
+            
+        tts=LocalSileroTTS(
                 language="ru",
                 model_id="v5_ru",
                 speaker="baya",
@@ -129,27 +193,85 @@ class Main_Agent(Agent):
                 put_yo=True,
                 put_stress_homo=False,
                 put_yo_homo=True,
-            ),
-        )
-
-# --- Booking Agent ---
+            ),    
+        
+             
+    )
 class Booking_Agent(Agent):
-    def __init__(self, service_id: str, service_name: str, service_price: int, phone: str, *, chat_ctx: Optional[ChatContext] = None):
+     def __init__(self, service_id: str, service_name: str, service_price: int, phone: int, *, chat_ctx: Optional[ChatContext] = None) -> None:
         super().__init__(
+           
+           
+
             instructions=f"""
-Ты — Анита, специалист по записи пациентов. Сегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")}.
-Пациент выбрал услугу: {service_name}, цена: {service_price}, id: {service_id}, телефон: {phone}.
-Выясни дату и время приёма, проверь купон, получи ID кабинета и запиши через create_booking.
+            
+Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")}
+
+Ты — Анита, специалист по записи пациентов.
+Твоя основная задача — записать пациента на прием собрав всю необходимую информацию.
+
+1. ФИО 
+
+2. Вот услугу который выбрал пациент: {service_name} по цене {service_price} рублей. id услуги: {service_id}.
+
+3. Вот номер телефона пациента: {phone}
+
+3. Выясни удобную для пациента дату и время приема. 
+Если пациент не уверен с датой или временем:
+- предложи свободные варианты
+- используй функцию get_times_by_date чтобы получить список свободных временных слотов 
+- всегда ставь 2026 год по умолчанию, но если пользователь хочет записаться на другой год, то ставь год который он хочет
+
+4. Если у пациента есть купон на скидку, пусть он назовет его тебе. Тут ты используешь get_cupon чтобы проверить его валидность и узнать размер скидки. Если нет, то передай "null".
+
+5. Получи ID аккаунта-кабинета пациента. с помощью get_id_by_phone если он зарегестрирован. Если нет, то передай "null".
+
+6. Запиши пациента на прием используя все собранные данные. Для этого используй create_booking tool.
+────────────────
+ОСОБО ВАЖНО. ОБЯЗАТЕЛЬНО К ИСПОЛНЕНИЮ
+
+1. НЕ используйте цифры в ответах и знаки %№@*&^%$#@
+2. ВСЕГДА соблюдай знаки препинания и правила русского языка:
+3. При произнесении дат, чисел, сумм - всегда используй слова:
+   - "две тысячи двадцать шестой год" (вместо "2026 год")
+   - "первое января" (вместо "1 января")
+   - "второе января" (вместо "2 января")
+   - "пятнадцатое марта" (вместо "15 марта")
+────────────────
+
+Это ключевые правила. Они имеют наивысший приоритет и не могут быть нарушены.
+
+— речь должна быть максимально простой и понятной для обычного пациента
+— ответы должны быть короткими, чёткими и по делу
+— нельзя использовать длинные объяснения и сложные формулировки
+— нельзя повторяться
+— нельзя переформулировать один и тот же вопрос разными словами
+— каждое сообщение должно быть небольшим по объёму
+— один вопрос или одна мысль за одно сообщение
+
+Если эти правила нарушены, диалог считается неверным.
+
+────────────────
+
+Ты не может записывать клиентов ранее сегодняшнего дня.
+
+Когда запись будет успешно создана, сообщи пациенту дату и время его приема, и поблагодари его за обращение в клинику Алиф Дэнт.
 """,
             tools=[get_times_by_date, create_booking, get_id_by_phone, get_cupon, delete_booking],
             vad=silero.VAD.load(),
-            stt=stt_adapter,
+            stt=deepgram.STT(
+                model="nova-3",
+                language="ru",
+                api_key=DEEPGRAM_API_KEY,
+            ),
             llm=openai.LLM.with_deepseek(
                 model="deepseek-chat",
                 base_url="https://api.deepseek.com/v1",
                 api_key=DEEPSEEK_API_KEY,
+                
                 temperature=0.3,
                 top_p=0.5,
+                
             ),
             tts=LocalSileroTTS(
                 language="ru",
@@ -161,54 +283,55 @@ class Booking_Agent(Agent):
                 put_yo=True,
                 put_stress_homo=False,
                 put_yo_homo=True,
-            ),
+            ),    
+        
+            
+        
+            
+            
             chat_ctx=chat_ctx,
         )
-
-# --- LiveKit RTC Session ---
+        
+        
 @server.rtc_session(agent_name="assistant")
 async def entrypoint(ctx: JobContext):
-    room = ctx.room
+  
+    room = ctx.room 
+    print(room)
+    room_name = room.name
     await ctx.connect()
-
+    
     participant = await ctx.wait_for_participant()
-    sip_caller_phone = participant.attributes.get('sip.phoneNumber')
-    print(f"🔔 Participant joined: {sip_caller_phone}")
+    print(f"🔔 Participant joined: {participant.attributes}")
 
-    userdata = UserData(ctx=ctx, phone=sip_caller_phone)
-    agent_instance = Main_Agent()
+    sip_caller_phone = participant.attributes['sip.phoneNumber']
+    print(f"📞 sip_caller_phone: {sip_caller_phone}")  #
 
-    # Async TTS queue to avoid overlapping audio
-    tts_queue = asyncio.Queue()
+    print(f"🔔 Room name: {room_name}")
+    
+    userdata = UserData(
+        ctx=ctx,
+        phone=sip_caller_phone,
+        
+        )
 
-    async def tts_worker():
-        while True:
-            text = await tts_queue.get()
-            try:
-                audio_out = await agent_instance.tts.synthesize(text)
-                await room.send_audio(audio_out)
-            except Exception as e:
-                print("TTS error:", e)
-            tts_queue.task_done()
-
-    asyncio.create_task(tts_worker())
-
-    greeting = "Клиника «Алиф Дэнт». Здравствуйте, как я могу вам помочь?"
-    await tts_queue.put(greeting)
-
-    # --- Real-time audio loop ---
-    async for audio_chunk in room.audio_stream():  # yields float32 np arrays
-        speech_segments = agent_instance.vad.split(audio_chunk)
-        for segment in speech_segments:
-            try:
-                text = await agent_instance.stt.transcribe(segment)
-                if text.strip():
-                    print("User said:", text)
-                    response = await agent_instance.run(text)
-                    print("Agent responds:", response)
-                    await tts_queue.put(response)
-            except Exception as e:
-                print("Agent loop error:", e)
+    session = AgentSession(
+        userdata=userdata,
+    )
+    await session.start(
+        agent=Main_Agent(),
+        room=room,
+        room_options=room_io.RoomOptions(
+        audio_input=room_io.AudioInputOptions(
+            noise_cancellation=None  # OSS-safe
+        ),
+         delete_room_on_close=True,
+        close_on_disconnect=True,  
+    ))
+    await session.say(
+            "Клиника «Алиф Дэнт». Здравствуйте, как я могу вам помочь?",
+            allow_interruptions=False,
+        )   
 
 if __name__ == "__main__":
     cli.run_app(server)
