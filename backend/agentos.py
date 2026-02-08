@@ -6,9 +6,8 @@ from livekit.agents.beta.workflows.dtmf_inputs import GetDtmfTask
 import logging
 import pytz
 import datetime
-
-from livekit.protocol import sip as proto_sip
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -24,10 +23,15 @@ from livekit.agents import (
     cli,
     room_io,
 )
-from livekit.plugins import openai, silero, noise_cancellation
-
+from livekit.plugins import deepgram, openai, silero
+import asyncio
 from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
+
+from livekit.agents.tts.stream_adapter import StreamAdapter
+from Qwen.tts import Qwen3TTS, Qwen3StreamAdapter 
+from Qwen.stt import WhisperHFStream
+
 
 import os
 
@@ -35,7 +39,6 @@ logger = logging.getLogger("agent")
 load_dotenv()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # check if storage already exists
 THIS_DIR = Path(__file__).parent
 # Load environment variables
@@ -45,19 +48,33 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 
 server = AgentServer()
 
+qwen_tts = Qwen3TTS(sample_rate=24000)
+    
+streaming_tts = Qwen3StreamAdapter(qwen_tts)
+# --- HFStreamAdapter for async integration ---
+class HFStreamAdapter:
+    def __init__(self, hf_stream):
+        self.hf_stream = hf_stream
+
+    async def receive_audio(self, audio_chunk: np.ndarray):
+        # Run in thread to avoid blocking async event loop
+        await asyncio.to_thread(self.hf_stream.process_chunk, audio_chunk)
+
+# --- instantiate HF stream ---
+hf_stt = WhisperHFStream(model_id="openai/whisper-large-v3-turbo", device="cuda:0")
+stt_adapter = HFStreamAdapter(hf_stt)
+
 @dataclass
 class UserData:
-    
+    personas: dict[str, Agent] = field(default_factory=dict)
+    prev_agent: Optional[Agent] = None
     ctx: Optional[JobContext] = None
+
     phone: str | None = None
 
     service_id: str | None = None
     service_name: str | None = None
     service_price: int | None = None
-
-
-    room: str | None = None
-    participant_identity: str | None = None 
 
     def summarize(self) -> str:
         return "Пациент и информация о сессии."
@@ -65,7 +82,6 @@ class UserData:
 RunContext_T = RunContext[UserData]
 
 print(RunContext_T)
-
 
 class Main_Agent(Agent):
     @function_tool
@@ -91,46 +107,15 @@ class Main_Agent(Agent):
         userdata = ctx.userdata
         # парсим и сохраняем услугу в userdata
         phone = userdata.phone
+       
         userdata.service_id = service_id
         userdata.service_name = service_name
         userdata.service_price = int(service_price)
         print(f"🔔 вот услуга: {service_name} и цена {service_price} рублей.  Вот номер телефона: {phone}")
-        return Booking_Agent(service_id, service_name, service_price, phone), "Как вас Зовут?."
-    
-    
-    @function_tool
-    async def transfer_call(self, ctx: RunContext[UserData]) -> None:
-        """
-        Вызывается для перевода звонка на менеджера.
-        """
-        userdata = ctx.userdata
-        # парсим и сохраняем услугу в userdata
-        participant_identity = userdata.participant_identity
-        transfer_to = "sip:79150628917@sip.your-provider.com"
-        room = userdata.room
-        print(f"Transferring call for participant {participant_identity} to {transfer_to}")
 
-        try:
-           
-            livekit_url = LIVEKIT_URL
-            api_key = LIVEKIT_API_KEY
-            api_secret = LIVEKIT_API_SECRET
-            userdata.livekit_api = api.LiveKitAPI(
-                url=livekit_url,
-                api_key=api_key,
-                api_secret=api_secret
-            )
-            transfer_request = proto_sip.TransferSIPParticipantRequest(
-            participant_identity=participant_identity,
-            room_name=room,
-            transfer_to=transfer_to,  # ← строка "79150628917"
-            play_dialtone=True
-        )
-            await userdata.livekit_api.sip.transfer_sip_participant(transfer_request) 
-            
-        except Exception as e:
-            logger.error(f"Failed to transfer call: {e}", exc_info=True)
-            await self.session.generate_reply(user_input="Извините, не удалось перевести звонок. Чем ещё могу помочь?")
+
+        
+        return Booking_Agent(service_id, service_name, service_price, phone), "Как вас Зовут?."
 
     def __init__(self) -> None:
        
@@ -150,6 +135,13 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 
 Это ключевые правила. Они имеют наивысший приоритет и не могут быть нарушены.
 
+1. НЕ используйте цифры в ответах и знаки %№@*&^%$#@
+2. ВСЕГДА соблюдай знаки препинания и правила русского языка:
+3. При произнесении дат, чисел, сумм - всегда используй слова:
+   - "две тысячи двадцать шестой год" (вместо "2026 год")
+   - "первое января" (вместо "1 января")
+   - "второе января" (вместо "2 января")
+   - "пятнадцатое марта" (вместо "15 марта")
 
 — речь должна быть максимально простой и понятной для обычного пациента
 — ответы должны быть короткими, чёткими и по делу
@@ -161,27 +153,26 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 
 Если эти правила нарушены, диалог считается неверным.
 
-
+────────────────
 
 Алгоритм работы с пациентом
 
 — поздоровайся и представься по имени
 
-- в клиники много специалистов и услуг, помоги пациенту с выбором
-- твоя задача — понять потребность пациента и предложить подходящую услугу
+— мягко выясни причину обращения, задавая открытые вопросы
+— ты должна понять, что именно беспокоит пациента и какой специалист ему нужен
 - испольщзуй get_services чтобы узнать актуальный список услуг клиники и подобрать подходящую для пациента
 — если пациент сомневается, предлагай варианты и объясняй их простыми словами
 - пациент может ошибаться в названии услуги или врача, всегда помогай ему 
 — на основании ответов определи подходящую услугу и специалиста
 
 Примеры наводящих вопросов
-
 — Что вас беспокоит сейчас
-— Ты должна определить, нужна ли пациенту консультация, осмотр или лечение
+ 
+— Нужен ли вам осмотр, лечение или консультация
 
 Твоя цель — чтобы пациент почувствовал заботу, понял, что его слышат, и получил правильное направление к нужному специалисту клиники.
 
-Если пациенент просит его перевести на менеджера или другого специалиста, вызови функцию transfer_call.
 ЗАПОМНИ ВАЖНО !!! 
 
 После того, как ты определишь услугу, вызови функцию transfer_to_booking с JSON-данными услуги
@@ -189,22 +180,28 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 ,
 tools=[get_services],
 vad=silero.VAD.load(),
-        llm=openai.realtime.RealtimeModel(
-            voice="sage"
-        ),
+        stt=stt_adapter,
+        llm=openai.LLM.with_deepseek(
+            model="deepseek-chat",
+            base_url="https://api.deepseek.com/v1",
+            api_key=DEEPSEEK_API_KEY,
+            temperature=0.2,
+            top_p=0.3,),
+            
+        tts=streaming_tts,
+             
     )
 class Booking_Agent(Agent):
      def __init__(self, service_id: str, service_name: str, service_price: int, phone: int, *, chat_ctx: Optional[ChatContext] = None) -> None:
         super().__init__(
+           
            
 
             instructions=f"""
             
 Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")}
 
-Ты не может записывать клиентов ранее сегодняшнего дня.
-
-Тебя зовут Анита. Ты общаешься от лица женщины.
+Ты — Анита, специалист по записи пациентов.
 Твоя основная задача — записать пациента на прием собрав всю необходимую информацию.
 
 1. ФИО 
@@ -227,6 +224,15 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 ────────────────
 ОСОБО ВАЖНО. ОБЯЗАТЕЛЬНО К ИСПОЛНЕНИЮ
 
+1. НЕ используйте цифры в ответах и знаки %№@*&^%$#@
+2. ВСЕГДА соблюдай знаки препинания и правила русского языка:
+3. При произнесении дат, чисел, сумм - всегда используй слова:
+   - "две тысячи двадцать шестой год" (вместо "2026 год")
+   - "первое января" (вместо "1 января")
+   - "второе января" (вместо "2 января")
+   - "пятнадцатое марта" (вместо "15 марта")
+────────────────
+
 Это ключевые правила. Они имеют наивысший приоритет и не могут быть нарушены.
 
 — речь должна быть максимально простой и понятной для обычного пациента
@@ -241,21 +247,33 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 
 ────────────────
 
-
+Ты не может записывать клиентов ранее сегодняшнего дня.
 
 Когда запись будет успешно создана, сообщи пациенту дату и время его приема, и поблагодари его за обращение в клинику Алиф Дэнт.
 """,
             tools=[get_times_by_date, create_booking, get_id_by_phone, get_cupon, delete_booking],
             vad=silero.VAD.load(),
-            llm=openai.realtime.RealtimeModel(
-            voice="coral"
-        ),    
+            stt=deepgram.STT(
+                model="nova-3",
+                language="ru",
+                api_key=DEEPGRAM_API_KEY,
+            ),
+            llm=openai.LLM.with_deepseek(
+                model="deepseek-chat",
+                base_url="https://api.deepseek.com/v1",
+                api_key=DEEPSEEK_API_KEY,
+                
+                temperature=0.3,
+                top_p=0.5,
+                
+            ),
+            tts=streaming_tts,
+            
         
             
             
             chat_ctx=chat_ctx,
         )
-        print(f"🔔 Booking_Agent initialized with phone: {phone}, service_id: {service_id}, service_name: {service_name}, service_price: {service_price}")
         
         
 @server.rtc_session(agent_name="assistant")
@@ -275,10 +293,8 @@ async def entrypoint(ctx: JobContext):
     print(f"🔔 Room name: {room_name}")
     
     userdata = UserData(
-        ctx=ctx, 
+        ctx=ctx,
         phone=sip_caller_phone,
-        room=room_name,
-        participant_identity=participant.identity,
         
         )
 
@@ -295,11 +311,10 @@ async def entrypoint(ctx: JobContext):
          delete_room_on_close=True,
         close_on_disconnect=True,  
     ))
-    await session.generate_reply(
-        instructions="Скажи: Привет! Я Анита, менеджер стоматологической клиники Алиф Дэнт. Как я могу вам помочь? "
-    )
-
-    
+    await session.say(
+            "Клиника «Алиф Дэнт». Здравствуйте, как я могу вам помочь?",
+            allow_interruptions=False,
+        )   
 
 if __name__ == "__main__":
     cli.run_app(server)

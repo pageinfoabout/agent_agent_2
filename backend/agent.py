@@ -32,7 +32,7 @@ from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
 
 from livekit.agents.tts.stream_adapter import StreamAdapter
-from Qwen.tts import Qwen3TTS, Qwen3StreamAdapter 
+from tts_silero import LocalSileroTTS
 from Qwen.stt import WhisperHFStream
 
 
@@ -51,19 +51,9 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 
 server = AgentServer()
 
-qwen_tts = Qwen3TTS(sample_rate=24000)
 
-class Qwen3StreamAdapter(StreamAdapter):
-    def __init__(self, tts_instance: tts.TTS):
-        # Pass tts_instance to the abstract base class
-        super().__init__(tts=tts_instance)
-        self._tts = tts_instance
 
-    def synthesize(self, text: str, conn_options=None):
-        # Just delegate to your existing Qwen3TTS
-        return self._tts.synthesize(text, conn_options=conn_options)
-    
-streaming_tts = Qwen3StreamAdapter(qwen_tts)
+
 # --- HFStreamAdapter for async integration ---
 class HFStreamAdapter:
     def __init__(self, hf_stream):
@@ -201,7 +191,18 @@ vad=silero.VAD.load(),
             temperature=0.2,
             top_p=0.3,),
             
-        tts=streaming_tts,
+        tts=LocalSileroTTS(
+                language="ru",
+                model_id="v5_ru",
+                speaker="baya",
+                device="cpu",
+                sample_rate=48000,
+                put_accent=True,
+                put_yo=True,
+                put_stress_homo=False,
+                put_yo_homo=True,
+            ),    
+        
              
     )
 class Booking_Agent(Agent):
@@ -280,7 +281,18 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
                 top_p=0.5,
                 
             ),
-            tts=streaming_tts,
+            tts=LocalSileroTTS(
+                language="ru",
+                model_id="v5_ru",
+                speaker="baya",
+                device="cpu",
+                sample_rate=48000,
+                put_accent=True,
+                put_yo=True,
+                put_stress_homo=False,
+                put_yo_homo=True,
+            ),    
+        
             
         
             
