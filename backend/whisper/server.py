@@ -32,7 +32,6 @@ pipe = pipeline(
     feature_extractor=processor.feature_extractor,
     torch_dtype=torch_dtype,
     device=device,
-    model_kwargs={"torch_dtype": torch_dtype}
 )
 
 print(f"✅ Whisper API ready on {device}!")
