@@ -54,14 +54,18 @@ server = AgentServer()
 
 
 
-# --- HFStreamAdapter for async integration ---
+class Capabilities:
+    def __init__(self, streaming: bool = True):
+        self.streaming = streaming
+
 class HFStreamAdapter:
     def __init__(self, hf_stream):
         self.hf_stream = hf_stream
+        self.capabilities = Capabilities(streaming=True)
 
     async def receive_audio(self, audio_chunk: np.ndarray):
-        # Run in thread to avoid blocking async event loop
         await asyncio.to_thread(self.hf_stream.process_chunk, audio_chunk)
+
 
 # --- instantiate HF stream ---
 hf_stt = WhisperHFStream(model_id="openai/whisper-large-v3-turbo", device="cuda:0")
