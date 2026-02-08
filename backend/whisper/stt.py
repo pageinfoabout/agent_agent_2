@@ -13,6 +13,7 @@ from livekit.agents import stt, utils
 from livekit.agents.types import NotGivenOr, NOT_GIVEN
 from livekit.agents.voice.io import TimedString
 from livekit.agents.utils import AudioBuffer
+from livekit.agents.stt import STTConnectionOptions
 
 @dataclass
 class STTOptions:
@@ -102,7 +103,11 @@ def is_given(val) -> bool:
 
 class WhisperSpeechStream(stt.SpeechStream):
     def __init__(self, *, stt: WhisperSTT, opts: STTOptions):
-        super().__init__(stt=stt, conn_options=None, sample_rate=opts.sample_rate)
+        super().__init__(
+    stt=stt,
+    conn_options=STTConnectionOptions(),
+    sample_rate=opts.sample_rate,
+)
         self._opts = opts
         self._speaking = False
         self._input_queue = asyncio.Queue()
