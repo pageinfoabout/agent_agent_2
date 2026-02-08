@@ -101,6 +101,7 @@ class Main_Agent(Agent):
         return Booking_Agent(service_id, service_name, service_price, phone), "Как вас зовут?"
 
     def __init__(self):
+        
         super().__init__(
             instructions=f"""
 Ты — ИИ менеджер стоматологической клиники Алиф Дэнт. Тебя зовут Анита, общаешься от лица женщины.
@@ -175,7 +176,7 @@ async def entrypoint(ctx: JobContext):
     print(f"🔔 Participant joined: {sip_caller_phone}")
 
     userdata = UserData(ctx=ctx, phone=sip_caller_phone)
-    agent_instance = Main_Agent(stt=stt_adapter)
+    agent_instance = Main_Agent()
 
     # Async TTS queue to avoid overlapping audio
     tts_queue = asyncio.Queue()
