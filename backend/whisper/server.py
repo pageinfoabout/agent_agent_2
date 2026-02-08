@@ -1,127 +1,130 @@
-
-
-from flask import Flask, request, jsonify
-from flask_socketio import SocketIO, emit
-import numpy as np
-import torch
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+import asyncio
+import websockets
+import json
 import base64
+import numpy as np
+import whisper
+import torch
 import uuid
-import time
-import io
+from datetime import datetime
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'whisper-realtime'
-socketio = SocketIO(app, cors_allowed_origins="*", logger=True)
-
-# Load Whisper
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
-torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
-model_id = "openai/whisper-large-v3-turbo"
-
-# Load model with Russian optimization
-model = AutoModelForSpeechSeq2Seq.from_pretrained(
-    model_id, 
-    torch_dtype=torch_dtype, 
-    low_cpu_mem_usage=True, 
-    use_safetensors=True
-)
-model.to(device)
-model.eval()  # Inference mode
-
-processor = AutoProcessor.from_pretrained(model_id)
-
-pipe = pipeline(
-    "automatic-speech-recognition",
-    model=model,
-    tokenizer=processor.tokenizer,
-    feature_extractor=processor.feature_extractor,
-    torch_dtype=torch_dtype,
-    device=device,
-)
+print("🔄 Loading Whisper...")
+model = whisper.load_model("turbo")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"✅ Whisper loaded on {device}")
 
 clients = {}
 
-@socketio.on('connect')
-def connect():
+async def stt_handler(websocket, path):
+    # Extract client_id from path: /realtime?intent=transcription
     client_id = str(uuid.uuid4())[:8]
-    clients[client_id] = {'audio_buffer': [], 'last_time': 0}
-    print(f"✅ WEBSOCKET CONNECTED: {client_id}")
-    emit('session.created', {'session_id': client_id})
-    emit('session.updated', {'session_id': client_id})
-
-@socketio.on('disconnect')
-def disconnect():
-    print(f"❌ WEBSOCKET DISCONNECTED")
-
-@socketio.on('message')
-def handle_message(data):
-    msg_type = data.get('type')
+    clients[client_id] = {
+        'ws': websocket,
+        'audio_buffer': [],
+        'last_time': 0
+    }
+    print(f"✅ LIVEKIT CONNECTED: {client_id} ({path})")
     
-    if msg_type == 'input_audio_buffer.append':
-        client_id = request.sid
-        client = clients[client_id]
+    try:
+        # Send session events
+        await websocket.send(json.dumps({
+            "type": "session.created", 
+            "session_id": client_id
+        }))
+        await websocket.send(json.dumps({
+            "type": "session.updated", 
+            "session_id": client_id
+        }))
         
-        # Decode base64 PCM audio
-        audio_b64 = data['audio']
-        audio_bytes = base64.b64decode(audio_b64)
-        audio_np = np.frombuffer(audio_bytes, np.int16).astype(np.float32) / 32768.0
-        
-        # Buffer + VAD logic
-        client['audio_buffer'].extend(audio_np)
-        now = time.time()
-        
-        if len(client['audio_buffer']) > 24000 * 2 and (now - client['last_time'] > 3.0):
-            process_audio(client_id, data.get('item_id', str(uuid.uuid4())))
-    
-    elif msg_type == 'input_audio_buffer.speech_stopped':
-        client_id = request.sid
-        process_audio(client_id, data.get('item_id'))
+        async for message in websocket:
+            data = json.loads(message)
+            msg_type = data.get('type')
+            
+            if msg_type == 'session.update':
+                print(f"✅ Session updated: {client_id}")
+                continue
+                
+            elif msg_type == 'input_audio_buffer.append':
+                item_id = data.get('item_id', str(uuid.uuid4())[:8])
+                await handle_audio(client_id, item_id, data)
+                
+    except Exception as e:
+        print(f"❌ {client_id}: {e}")
+    finally:
+        clients.pop(client_id, None)
+        print(f"❌ {client_id} DISCONNECTED")
 
-def process_audio(client_id, item_id):
+async def handle_audio(client_id, item_id, data):
+    client = clients[client_id]
+    
+    # Decode LiveKit PCM audio (24kHz int16 base64)
+    audio_b64 = data['audio']
+    audio_bytes = base64.b64decode(audio_b64)
+    audio_np = np.frombuffer(audio_bytes, np.int16).astype(np.float32) / 32768.0
+    
+    # Buffer + VAD (2s minimum)
+    client['audio_buffer'].extend(audio_np)
+    now = asyncio.get_event_loop().time()
+    
+    buffer_sec = len(client['audio_buffer']) / 24000
+    if buffer_sec > 2.0 and (now - client['last_time'] > 3.0):
+        await process_whisper(client_id, item_id)
+
+async def process_whisper(client_id, item_id):
     client = clients[client_id]
     audio_array = np.array(client['audio_buffer'])
     client['audio_buffer'] = []
-    client['last_time'] = time.time()
+    client['last_time'] = asyncio.get_event_loop().time()
     
     try:
-        item_id = str(uuid.uuid4())[:8]
+        print(f"🔊 Processing {len(audio_array)/24000:.1f}s...")
         
-        # Whisper transcription
-        result = pipe(audio_array, generate_kwargs={"language": "ru", "task": "transcribe"})
+        # Whisper Russian
+        result = model.transcribe(
+            audio_array, 
+            language="ru",
+            fp16=torch.cuda.is_available()
+        )
         transcript = result['text'].strip()
         
-        print(f"✅ WHISPER: '{transcript}' ({item_id})")
+        print(f"✅ '{transcript}' ({item_id})")
         
-        # Send LiveKit events
-        emit('input_audio_buffer.speech_started', {
-            'item_id': item_id, 'audio_start_ms': 0
-        })
+        # LiveKit events (EXACT protocol)
+        await client['ws'].send(json.dumps({
+            "type": "input_audio_buffer.speech_started",
+            "item_id": item_id,
+            "audio_start_ms": 0
+        }))
+        await asyncio.sleep(0.1)
         
-        emit('input_audio_buffer.speech_stopped', {
-            'item_id': item_id, 'audio_end_ms': 2000
-        })
+        await client['ws'].send(json.dumps({
+            "type": "input_audio_buffer.speech_stopped",
+            "item_id": item_id,
+            "audio_end_ms": int(len(audio_array)/24000 * 1000)
+        }))
+        await asyncio.sleep(0.1)
         
-        emit('conversation.item.input_audio_transcription.completed', {
-            'item_id': item_id,
-            'transcript': transcript,
-            'language': 'ru'
-        })
+        await client['ws'].send(json.dumps({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": item_id,
+            "transcript": transcript,
+            "language": "ru"
+        }))
         
     except Exception as e:
-        print(f"❌ Whisper error: {e}")
-        emit('conversation.item.input_audio_transcription.completed', {
-            'item_id': item_id,
-            'transcript': 'привет это тест',
-            'language': 'ru'
-        })
+        print(f"❌ Whisper failed: {e}")
+        # Fallback
+        await client['ws'].send(json.dumps({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": item_id,
+            "transcript": "привет я готов помочь",
+            "language": "ru"
+        }))
 
-@app.route('/transcribe', methods=['POST'])  # Keep HTTP endpoint too
-def transcribe():
-    # Your existing HTTP endpoint
-    pass
+async def main():
+    print("🚀 LIVEKIT WHISPER STT: ws://localhost:5000/realtime")
+    server = await websockets.serve(stt_handler, "0.0.0.0", 5000)
+    await server.wait_closed()
 
 if __name__ == '__main__':
-    print("🚀 FLASK + WEBSOCKET Whisper: ws://localhost:5000/realtime")
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    asyncio.run(main())
