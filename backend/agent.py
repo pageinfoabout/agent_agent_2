@@ -25,6 +25,8 @@ from livekit.agents import (
     tts
 )
 from livekit.plugins import deepgram, openai, silero
+
+import numpy as np
 import asyncio
 from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
