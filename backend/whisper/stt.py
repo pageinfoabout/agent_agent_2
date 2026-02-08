@@ -221,10 +221,7 @@ class STT(stt.STT):
             "User-Agent": "LiveKit Agents",
             "Authorization":  "Bearer dummy",
         }
-        url = f"{str(self._client.base_url).rstrip('/')}/realtime?{urlencode(query_params)}"
-        if url.startswith("http"):
-            url = url.replace("http", "ws", 1)
-
+        url = "ws://localhost:5000/realtime?intent=transcription"
         session = self._ensure_session()
         ws = await asyncio.wait_for(session.ws_connect(url, headers=headers), timeout)
         await ws.send_json(realtime_config)
