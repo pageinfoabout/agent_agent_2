@@ -173,7 +173,6 @@ vad=silero.VAD.load(),
                 base_url="http://localhost:5000",  # Your Flask server
                 api_key="dummy-token",  # Optional, ignored by Flask
                 language="ru",
-                model="whisper-large-v3-turbo",
                 use_realtime=True
             ),
         llm=openai.LLM.with_deepseek(
@@ -263,7 +262,6 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
                 base_url="http://localhost:5000",  # Your Flask server
                 api_key="dummy-token",  # Optional, ignored by Flask
                 language="ru",
-                model="whisper-large-v3-turbo",
                 use_realtime=True
             ),
             llm=openai.LLM.with_deepseek(
