@@ -170,7 +170,7 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 tools=[get_services],
 vad=silero.VAD.load(),
         stt = STT(
-                base_url="http://localhost:5000",  # Your Flask server
+                base_url="ws://localhost:5000/realtime",  # Your Flask server
                 api_key="dummy-token",  # Optional, ignored by Flask
                 language="ru",
                 use_realtime=True
@@ -259,7 +259,7 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
             tools=[get_times_by_date, create_booking, get_id_by_phone, get_cupon, delete_booking],
             vad=silero.VAD.load(),
             stt = STT(
-                base_url="http://localhost:5000",  # Your Flask server
+                base_url="ws://localhost:5000/realtime",  # Your Flask server
                 api_key="dummy-token",  # Optional, ignored by Flask
                 language="ru",
                 use_realtime=True
