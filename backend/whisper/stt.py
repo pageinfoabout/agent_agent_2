@@ -13,7 +13,7 @@ from livekit.agents import stt, utils
 from livekit.agents.types import NotGivenOr, NOT_GIVEN
 from livekit.agents.voice.io import TimedString
 from livekit.agents.utils import AudioBuffer
-from livekit.agents.stt.connection import STTConnectionOptions
+
 
 @dataclass
 class STTOptions:
@@ -105,7 +105,7 @@ class WhisperSpeechStream(stt.SpeechStream):
     def __init__(self, *, stt: WhisperSTT, opts: STTOptions):
         super().__init__(
     stt=stt,
-    conn_options=STTConnectionOptions(),
+    conn_options=stt._default_conn_options(),
     sample_rate=opts.sample_rate,
 )
         self._opts = opts
