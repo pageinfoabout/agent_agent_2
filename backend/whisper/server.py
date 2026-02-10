@@ -17,8 +17,12 @@ model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, torch_dtype=torch.fl
 model.to(device)
 processor = AutoProcessor.from_pretrained(model_id)
 
-pipe = pipeline("automatic-speech-recognition", model=model, tokenizer=processor.tokenizer, 
-                feature_extractor=processor.feature_extractor, device=device)
+pipe = pipeline(
+    "automatic-speech-recognition", 
+    model=model, 
+    tokenizer=processor.tokenizer, 
+    feature_extractor=processor.feature_extractor, 
+    device=device)
 
 print(f"✅ Whisper ready on {device} (NO hallucinations)")
 

@@ -23,14 +23,15 @@ from livekit.agents import (
     cli,
     room_io,
 )
-from livekit.plugins import deepgram, openai, silero
+from livekit.plugins import deepgram, openai, silero, groq
 import asyncio
 from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
 
 from livekit.agents.tts.stream_adapter import StreamAdapter
 from Qwen.tts import Qwen3TTS, Qwen3StreamAdapter 
-from Qwen.stt import WhisperHFStream
+from whisper.stt import STT
+
 
 
 import os
@@ -39,6 +40,8 @@ logger = logging.getLogger("agent")
 load_dotenv()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 # check if storage already exists
 THIS_DIR = Path(__file__).parent
 # Load environment variables
@@ -51,18 +54,7 @@ server = AgentServer()
 qwen_tts = Qwen3TTS(sample_rate=24000)
     
 streaming_tts = Qwen3StreamAdapter(qwen_tts)
-# --- HFStreamAdapter for async integration ---
-class HFStreamAdapter:
-    def __init__(self, hf_stream):
-        self.hf_stream = hf_stream
 
-    async def receive_audio(self, audio_chunk: np.ndarray):
-        # Run in thread to avoid blocking async event loop
-        await asyncio.to_thread(self.hf_stream.process_chunk, audio_chunk)
-
-# --- instantiate HF stream ---
-hf_stt = WhisperHFStream(model_id="openai/whisper-large-v3-turbo", device="cuda:0")
-stt_adapter = HFStreamAdapter(hf_stt)
 
 @dataclass
 class UserData:
@@ -180,13 +172,17 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 ,
 tools=[get_services],
 vad=silero.VAD.load(),
-        stt=stt_adapter,
-        llm=openai.LLM.with_deepseek(
-            model="deepseek-chat",
-            base_url="https://api.deepseek.com/v1",
-            api_key=DEEPSEEK_API_KEY,
-            temperature=0.2,
-            top_p=0.3,),
+        stt = STT(
+                        base_url="ws://localhost:5000/realtime",  # Your Flask server
+                        api_key="dummy-token",  # Optional, ignored by Flask
+                        language="ru",
+                        use_realtime=True
+                    ),
+
+       
+        llm=groq.LLM(
+        model="llama3-8b-8192"
+    ),
             
         tts=streaming_tts,
              
@@ -253,11 +249,13 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
 """,
             tools=[get_times_by_date, create_booking, get_id_by_phone, get_cupon, delete_booking],
             vad=silero.VAD.load(),
-            stt=deepgram.STT(
-                model="nova-3",
+            stt = STT(
+                base_url="ws://localhost:5000/realtime",  # Your Flask server
+                api_key="dummy-token",  # Optional, ignored by Flask
                 language="ru",
-                api_key=DEEPGRAM_API_KEY,
+                use_realtime=True
             ),
+            
             llm=openai.LLM.with_deepseek(
                 model="deepseek-chat",
                 base_url="https://api.deepseek.com/v1",

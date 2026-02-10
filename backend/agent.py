@@ -40,9 +40,8 @@ import os
 
 logger = logging.getLogger("agent")
 load_dotenv()
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-# check if storage already exists
+
+
 THIS_DIR = Path(__file__).parent
 # Load environment variables
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
@@ -175,12 +174,9 @@ vad=silero.VAD.load(),
                 language="ru",
                 use_realtime=True
             ),
-        llm=openai.LLM.with_deepseek(
-            model="deepseek-chat",
-            base_url="https://api.deepseek.com/v1",
-            api_key=DEEPSEEK_API_KEY,
-            temperature=0.2,
-            top_p=0.3,),
+        llm=openai.responses.LLM(
+        model="gpt-4o-mini"
+    ),
             
         tts=LocalSileroTTS(
                 language="ru",
@@ -264,15 +260,9 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
                 language="ru",
                 use_realtime=True
             ),
-            llm=openai.LLM.with_deepseek(
-                model="deepseek-chat",
-                base_url="https://api.deepseek.com/v1",
-                api_key=DEEPSEEK_API_KEY,
-                
-                temperature=0.3,
-                top_p=0.5,
-                
-            ),
+            llm=openai.responses.LLM(
+        model="gpt-4o-mini"
+    ),
             tts=LocalSileroTTS(
                 language="ru",
                 model_id="v5_ru",
