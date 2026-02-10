@@ -3,40 +3,42 @@ import websockets
 import json
 import base64
 import numpy as np
-from faster_whisper import WhisperModel
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+import torch
 import uuid
 import warnings
-import torch
 warnings.filterwarnings("ignore")
+from faster_whisper import WhisperModel
 
-print("🔄 Loading Faster-Whisper large-v3-turbo (ANTI-HALLUCINATION)...")
-device = "cuda" if torch.cuda.is_available() else "cpu"
+model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
 
-# 🛡️ ANTI-HALLUCINATION MODEL
+print("🔄 Loading Whisper large-v3-turbo...")
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+model_id = "openai/whisper-large-v3-turbo"
 model = WhisperModel(
     "large-v3-turbo", 
     device=device, 
     compute_type="float16" if device == "cuda" else "int8",
     download_root="/tmp/whisper_models"
 )
+model.to(device)
+processor = AutoProcessor.from_pretrained(model_id)
 
-print(f"✅ Faster-Whisper ready on {device} - ЖЕСТКИЙ АНТИ-ШУМ")
+pipe = pipeline(
+    "automatic-speech-recognition", 
+    model=model, 
+    tokenizer=processor.tokenizer, 
+    feature_extractor=processor.feature_extractor, 
+    device=device)
+
+print(f"✅ Whisper ready on {device} (NO hallucinations)")
 
 clients = {}
-BAD_PATTERNS = [
-    "субтитры", "dima", "torzok", "семкин", "егорова", "семёнкин",
-    "продолжение", "следует", "спасибо за", "переводчик", "редактор",
-    "озвучка", "автор", "корректор", "студия", "спонсор"
-]
 
 async def stt_handler(websocket):
     client_id = str(uuid.uuid4())[:8]
-    clients[client_id] = {
-        'ws': websocket, 
-        'audio_buffer': [], 
-        'last_time': 0,
-        'speech_energy': 0.0
-    }
+    clients[client_id] = {'ws': websocket, 'audio_buffer': [], 'last_time': 0}
     print(f"✅ LIVEKIT CONNECTED: {client_id}")
     
     try:
@@ -45,7 +47,9 @@ async def stt_handler(websocket):
         
         async for message in websocket:
             data = json.loads(message)
-            if data.get('type') == 'input_audio_buffer.append':
+            msg_type = data.get('type')
+            
+            if msg_type == 'input_audio_buffer.append':
                 item_id = data.get('item_id', str(uuid.uuid4())[:8])
                 await handle_audio(client_id, item_id, data)
                 
@@ -57,7 +61,7 @@ async def stt_handler(websocket):
 async def handle_audio(client_id, item_id, data):
     client = clients[client_id]
     
-    # Decode PCM → float32
+    # Decode PCM
     audio_b64 = data['audio']
     audio_bytes = base64.b64decode(audio_b64)
     audio_np = np.frombuffer(audio_bytes, np.int16).astype(np.float32) / 32768.0
@@ -65,9 +69,9 @@ async def handle_audio(client_id, item_id, data):
     client['audio_buffer'].extend(audio_np)
     now = asyncio.get_event_loop().time()
     
-    # ⚡ РЕАЛ-ТАЙМ: 600-1200ms чанки
+    # FIXED VAD: 4s+ AND loud enough
     buffer_sec = len(client['audio_buffer']) / 24000
-    if buffer_sec >= 0.6 and (now - client['last_time'] > 1.0):
+    if buffer_sec > 4.0 and (now - client['last_time'] > 6.0):
         await process_whisper(client_id, item_id)
 
 async def process_whisper(client_id, item_id):
@@ -76,96 +80,61 @@ async def process_whisper(client_id, item_id):
     client['audio_buffer'] = []
     client['last_time'] = asyncio.get_event_loop().time()
     
-    duration = len(audio_array) / 24000
-    
-    # 🔥 ЖЕСТКИЙ ФИЛЬТР ШУМА (убивает ТВ/субтитры)
-    energy = np.mean(audio_array**2)
-    loudness = np.max(np.abs(audio_array))
-    speech_frames = np.abs(np.convolve(audio_array, np.ones(512)/512, mode='valid'))
-    speech_peak = np.max(speech_frames)
-    
-    # 🚫 ОТСЕВ ТВ/ШУМА
-    if (energy < 0.008 or loudness < 0.12 or speech_peak < 0.15 or 
-        duration < 0.4 or duration > 10.0):
-        print(f"📺 ШУМ (E:{energy:.4f} L:{loudness:.3f} P:{speech_peak:.3f}) → Skip")
-        return
-    
-    print(f"🔊 Processing {duration:.1f}s (E:{energy:.4f})")
-    
     try:
-        # 🛡️ СУПЕР-STRICT VAD + КОНТЕКСТ
-        segments, info = model.transcribe(
-            audio_array,
-            language="ru",
-            beam_size=1,
-            vad_filter=True,
-            vad_parameters={
-                "speech_thresh": 0.8,           # 80% уверенности
-                "min_speech_duration_ms": 600,  # Минимум 0.6с речи
-                "max_speech_duration_s": 12,
-                "min_silence_duration_ms": 500,
-                "speech_pad_ms": 100,
-                "window_size_samples": 768
-            },
-            initial_prompt="Разговор по телефону о записи на прием к врачу",  # Контекст!
-            condition_on_previous_text=False
+        print(f"🔊 Processing {len(audio_array)/24000:.1f}s...")
+        
+        # SILENCE DETECTION (REMOVES "продолжение следует")
+        if np.std(audio_array) < 0.02 or np.max(np.abs(audio_array)) < 0.1:
+            print("⏸️ Silence detected → Skip")
+            return
+        
+        # Whisper with NO hallucinations
+        result = pipe(
+            audio_array, 
+            generate_kwargs={
+                "language": "ru", 
+                "task": "transcribe",
+                "num_beams": 1,      # Faster, less creative
+                "do_sample": False,   # No randomness
+                "temperature": 0.0    # Deterministic
+            }
         )
+        transcript = result['text'].strip()
         
-        # Собираем текст
-        transcript_parts = []
-        for segment in segments:
-            text = segment.text.strip()
-            if len(text) > 1:
-                transcript_parts.append(text)
-        
-        transcript = " ".join(transcript_parts).strip()
-        
-        # 🛡️ ФИНАЛЬНЫЙ АНТИ-ХАЛЛЮЦИНАЦИОННЫЙ ФИЛЬТР
-        transcript_lower = transcript.lower()
-        if (len(transcript) < 3 or 
-            len(transcript.split()) < 1 or
-            any(pattern in transcript_lower for pattern in BAD_PATTERNS)):
-            print(f"❌ FILTERED: '{transcript}'")
+        # FILTER BAD TRANSCRIPTS
+        bad_phrases = ["продолжение следует", "продолжение", "следует"]
+        if any(phrase in transcript.lower() for phrase in bad_phrases) or len(transcript) < 3:
+            print("❌ Filtered junk transcript")
             return
         
-        # ✅ ПРОВЕРКА КАЧЕСТВА (должно быть осмысленно)
-        word_count = len(transcript.split())
-        if word_count > 20 or word_count < 1:  # Слишком длинные/короткие
-            print(f"❌ BAD LENGTH: {word_count} words")
-            return
+        print(f"✅ '{transcript}' ({item_id})")
         
-        print(f"✅ '{transcript}' ({item_id}) [{duration:.1f}s]")
-        
-        # LiveKit события
+        # LiveKit events
         await client['ws'].send(json.dumps({
             "type": "input_audio_buffer.speech_started",
-            "item_id": item_id, 
-            "audio_start_ms": 0
+            "item_id": item_id, "audio_start_ms": 0
         }))
-        await asyncio.sleep(0.03)
+        await asyncio.sleep(0.1)
         
         await client['ws'].send(json.dumps({
             "type": "input_audio_buffer.speech_stopped", 
             "item_id": item_id, 
-            "audio_end_ms": int(duration * 1000)
+            "audio_end_ms": int(len(audio_array)/24000 * 1000)
         }))
-        await asyncio.sleep(0.03)
+        await asyncio.sleep(0.1)
         
         await client['ws'].send(json.dumps({
             "type": "conversation.item.input_audio_transcription.completed",
             "item_id": item_id,
             "transcript": transcript,
-            "language": "ru",
-            "confidence": float(info.language_probability) if info else 0.95
+            "language": "ru"
         }))
         
     except Exception as e:
-        print(f"❌ Whisper ERROR: {e}")
+        print(f"❌ Whisper: {e}")
 
 async def main():
-    print("🚀 ULTRA-FAST + ANTI-HALLUCINATION WHISPER STT")
-    print("📺 ТВ субтитры/шум = АВТОМАТИЧЕСКИЙ ОТСЕВ")
-    print("⚡ Latency: 0.6-1.2s чанки")
+    print("🚀 CLEAN WHISPER STT'")
     server = await websockets.serve(stt_handler, "0.0.0.0", 5000)
     await server.wait_closed()
 
