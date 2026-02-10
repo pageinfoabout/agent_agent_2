@@ -10,32 +10,23 @@ import warnings
 warnings.filterwarnings("ignore")
 from faster_whisper import WhisperModel
 
+
 model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
 
-print("🔄 Loading Whisper large-v3-turbo...")
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-# Load Whisper model
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
-torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+print("🔄 Loading faster-whisper large-v3-turbo...")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+compute_type = "float16" if device == "cuda" else "int8"
 
-model_id = "openai/whisper-large-v3-turbo"
-
-model = AutoModelForSpeechSeq2Seq.from_pretrained(
-    model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
-)
-model.to(device)
-
-processor = AutoProcessor.from_pretrained(model_id)
-
-pipe = pipeline(
-    "automatic-speech-recognition",
-    model=model,
-    tokenizer=processor.tokenizer,
-    feature_extractor=processor.feature_extractor,
-    torch_dtype=torch_dtype,
+whisper_model = WhisperModel(
+    "large-v3-turbo",
     device=device,
+    compute_type=compute_type,
+    download_root="/tmp/whisper_models"
 )
+
+
+
 print(f"✅ Whisper ready on {device} (NO hallucinations)")
 
 clients = {}
