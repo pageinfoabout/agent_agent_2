@@ -180,9 +180,15 @@ vad=silero.VAD.load(),
                     ),
 
        
-        llm=groq.LLM(
-        model="llama3-8b-8192"
-    ),
+        llm=openai.LLM.with_deepseek(
+            model="deepseek-chat",
+            base_url="https://api.deepseek.com/v1",
+            api_key=DEEPSEEK_API_KEY,
+            
+            temperature=0.2,
+            top_p=0.3,
+            
+        ),
             
         tts=streaming_tts,
              
