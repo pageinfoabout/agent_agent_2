@@ -29,8 +29,9 @@ from datetime import datetime
 from tools import  get_times_by_date, create_booking, get_services, get_id_by_phone, get_cupon, delete_booking
 
 from livekit.agents.tts.stream_adapter import StreamAdapter
-from Qwen.tts import Qwen3TTS, Qwen3StreamAdapter 
+
 from whisper.stt import STT
+from tts_silero import LocalSileroTTS
 
 
 
@@ -51,9 +52,7 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 
 server = AgentServer()
 
-qwen_tts = Qwen3TTS(sample_rate=24000)
-    
-streaming_tts = Qwen3StreamAdapter(qwen_tts)
+
 
 
 @dataclass
@@ -190,7 +189,19 @@ vad=silero.VAD.load(),
             
         ),
             
-        tts=streaming_tts,
+        
+            
+        tts=LocalSileroTTS(
+                language="ru",
+                model_id="v5_ru",
+                speaker="baya",
+                device="cpu",
+                sample_rate=48000,
+                put_accent=True,
+                put_yo=True,
+                put_stress_homo=False,
+                put_yo_homo=True,
+            ),  
              
     )
 class Booking_Agent(Agent):
@@ -271,7 +282,19 @@ Cегодня {datetime.now(pytz.timezone('Europe/Moscow')).strftime("%d %B %Y")
                 top_p=0.5,
                 
             ),
-            tts=streaming_tts,
+            
+            
+        tts=LocalSileroTTS(
+                language="ru",
+                model_id="v5_ru",
+                speaker="baya",
+                device="cpu",
+                sample_rate=48000,
+                put_accent=True,
+                put_yo=True,
+                put_stress_homo=False,
+                put_yo_homo=True,
+            ),  
             
         
             
