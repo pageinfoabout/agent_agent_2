@@ -3,16 +3,11 @@ import websockets
 import json
 import base64
 import numpy as np
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import torch
 import uuid
 import warnings
 warnings.filterwarnings("ignore")
 from faster_whisper import WhisperModel
-
-
-model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
-
 
 print("🔄 Loading faster-whisper large-v3-turbo...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -25,9 +20,7 @@ whisper_model = WhisperModel(
     download_root="/tmp/whisper_models"
 )
 
-
-
-print(f"✅ Whisper ready on {device} (NO hallucinations)")
+print(f"✅ faster-whisper ready on {device} (NO hallucinations)")
 
 clients = {}
 
@@ -56,7 +49,7 @@ async def stt_handler(websocket):
 async def handle_audio(client_id, item_id, data):
     client = clients[client_id]
     
-    # Decode PCM
+    # Decode PCM s16le @ 24kHz
     audio_b64 = data['audio']
     audio_bytes = base64.b64decode(audio_b64)
     audio_np = np.frombuffer(audio_bytes, np.int16).astype(np.float32) / 32768.0
@@ -64,7 +57,6 @@ async def handle_audio(client_id, item_id, data):
     client['audio_buffer'].extend(audio_np)
     now = asyncio.get_event_loop().time()
     
-    # FIXED VAD: 4s+ AND loud enough
     buffer_sec = len(client['audio_buffer']) / 24000
     if buffer_sec > 4.0 and (now - client['last_time'] > 6.0):
         await process_whisper(client_id, item_id)
@@ -78,25 +70,29 @@ async def process_whisper(client_id, item_id):
     try:
         print(f"🔊 Processing {len(audio_array)/24000:.1f}s...")
         
-        # SILENCE DETECTION (REMOVES "продолжение следует")
+        # Silence detection
         if np.std(audio_array) < 0.02 or np.max(np.abs(audio_array)) < 0.1:
             print("⏸️ Silence detected → Skip")
             return
         
-        # Whisper with NO hallucinations
-        result = pipe(
-            audio_array, 
-            generate_kwargs={
-                "language": "ru", 
-                "task": "transcribe",
-                "num_beams": 1,      # Faster, less creative
-                "do_sample": False,   # No randomness
-                "temperature": 0.0    # Deterministic
-            }
+        # ✅ CORRECT faster-whisper API
+        segments, info = whisper_model.transcribe(
+            audio_array,
+            language="ru",
+            beam_size=1,                    # Deterministic + fast
+            best_of=1,                      # No sampling
+            temperature=0.0,                # No randomness
+            vad_filter=True,                # Built-in voice activity detection
+            vad_parameters=dict(
+                min_silence_duration_ms=500,
+                max_speech_duration_s=30
+            )
         )
-        transcript = result['text'].strip()
         
-        # FILTER BAD TRANSCRIPTS
+        # Join all segments
+        transcript = " ".join(seg.text.strip() for seg in segments).strip()
+        
+        # Filter bad transcripts
         bad_phrases = ["продолжение следует", "продолжение", "следует"]
         if any(phrase in transcript.lower() for phrase in bad_phrases) or len(transcript) < 3:
             print("❌ Filtered junk transcript")
@@ -129,7 +125,7 @@ async def process_whisper(client_id, item_id):
         print(f"❌ Whisper: {e}")
 
 async def main():
-    print("🚀 CLEAN WHISPER STT'")
+    print("🚀 CLEAN FASTER-WHISPER STT")
     server = await websockets.serve(stt_handler, "0.0.0.0", 5000)
     await server.wait_closed()
 
