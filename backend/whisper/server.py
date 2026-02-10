@@ -6,6 +6,8 @@ import numpy as np
 from faster_whisper import WhisperModel
 import uuid
 import warnings
+import torch
+
 warnings.filterwarnings("ignore")
 
 print("🔄 Loading Faster-Whisper large-v3-turbo...")
@@ -151,5 +153,5 @@ async def main():
     await server.wait_closed()
 
 if __name__ == '__main__':
-    import torch
+    
     asyncio.run(main())
